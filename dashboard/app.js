@@ -436,6 +436,7 @@
     controls.minDistance = 10;
     controls.maxDistance = 500;
     controls.enablePan = true;
+    controls.screenSpacePanning = true;
 
     // ─── Raycaster ───
     raycaster = new THREE.Raycaster();
@@ -725,13 +726,14 @@
       const lineMat = new THREE.LineBasicMaterial({
         vertexColors: true,
         transparent: true,
-        opacity: 0.6,
+        opacity: 0.85,
+        linewidth: 1,
       });
       edgeLines = new THREE.LineSegments(lineGeo, lineMat);
       scene.add(edgeLines);
     }
 
-    // Memory link edges (faint, decorative)
+    // Memory link edges (subtle but visible)
     if (memoryLinkEdges.length > 0) {
       const positions = new Float32Array(memoryLinkEdges.length * 6);
       const colors = new Float32Array(memoryLinkEdges.length * 6);
@@ -744,8 +746,8 @@
         positions[off]     = s.x; positions[off+1] = s.y; positions[off+2] = s.z;
         positions[off + 3] = t.x; positions[off+4] = t.y; positions[off+5] = t.z;
         // Dim cyan for memory links
-        colors[off]     = 0; colors[off+1] = 0.3; colors[off+2] = 0.5;
-        colors[off + 3] = 0; colors[off+4] = 0.3; colors[off+5] = 0.5;
+        colors[off]     = 0; colors[off+1] = 0.4; colors[off+2] = 0.6;
+        colors[off + 3] = 0; colors[off+4] = 0.4; colors[off+5] = 0.6;
         e._drawIdx = i;
       });
 
@@ -755,7 +757,7 @@
       const lineMat = new THREE.LineBasicMaterial({
         vertexColors: true,
         transparent: true,
-        opacity: 0.08,
+        opacity: 0.2,
       });
       window._memLinkLines = new THREE.LineSegments(lineGeo, lineMat);
       scene.add(window._memLinkLines);
@@ -790,6 +792,7 @@
       // Disable 3D rotation, allow only pan/zoom
       controls.enableRotate = false;
       controls.enablePan = true;
+      controls.panSpeed = 1.5;
 
       // Animate camera to top-down view (looking down Z axis)
       camera.up.set(0, 1, 0);
@@ -798,6 +801,7 @@
       // Re-enable full 3D controls
       controls.enableRotate = true;
       controls.enablePan = true;
+      controls.panSpeed = 1.0;
 
       // Animate camera to perspective view
       animateCameraTo(0, 0, 120);
