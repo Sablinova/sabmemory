@@ -26,6 +26,8 @@
   let lastFPSTime = 0;
   let currentFPS = 0;
   let simAlpha = 1.0;         // simulation cooling
+  let graphMode = '3d';       // '3d' or '2d'
+  let modeTransition = 0;     // 0 = done, >0 = transitioning
 
   // ─── Constants ───
   const REPULSION = 600;
@@ -482,9 +484,25 @@
 
     // ─── Graph Controls ───
     document.getElementById('graph-reset').addEventListener('click', () => {
-      camera.position.set(0, 0, 120);
+      if (graphMode === '2d') {
+        camera.position.set(0, 0, 150);
+        camera.up.set(0, 1, 0);
+      } else {
+        camera.position.set(0, 0, 120);
+      }
       controls.target.set(0, 0, 0);
       controls.update();
+    });
+
+    // ─── 3D / 2D Toggle ───
+    document.querySelectorAll('.view-toggle-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const mode = btn.dataset.mode;
+        if (mode === graphMode) return;
+        document.querySelectorAll('.view-toggle-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        switchGraphMode(mode);
+      });
     });
 
     const showObsolete = document.getElementById('show-obsolete');
@@ -576,14 +594,14 @@
     // Orphan memories (no hub parent)
     const orphans = memoryNodes.filter(m => !memoryToHub[m.id]);
 
-    // Position hubs evenly spaced in 3D
+    // Position hubs evenly spaced
     const hubAngleStep = (2 * Math.PI) / Math.max(hubs.length, 1);
+    const layoutIs2D = graphMode === '2d';
     hubs.forEach((h, i) => {
       const angle = hubAngleStep * i;
-      const yOff = (i % 2 === 0 ? 1 : -1) * 10;
       h.x = Math.cos(angle) * HUB_SPREAD;
-      h.y = yOff;
-      h.z = Math.sin(angle) * HUB_SPREAD;
+      h.y = layoutIs2D ? (Math.sin(angle) * HUB_SPREAD) : ((i % 2 === 0 ? 1 : -1) * 10);
+      h.z = layoutIs2D ? 0 : (Math.sin(angle) * HUB_SPREAD);
       h.vx = 0; h.vy = 0; h.vz = 0;
       h._isHub = true;
       h._hubAnchorX = h.x;
@@ -591,20 +609,29 @@
       h._hubAnchorZ = h.z;
     });
 
-    // Position children around their hub in a 3D sphere
+    // Position children around their hub
     hubs.forEach(h => {
       const children = hubChildren[h.id];
       const count = children.length;
       children.forEach((cid, ci) => {
         const cn = graphNodes[idToIdx[cid]];
         if (!cn) return;
-        // Fibonacci sphere distribution around hub
-        const phi = Math.acos(1 - 2 * (ci + 0.5) / Math.max(count, 1));
-        const theta = Math.PI * (1 + Math.sqrt(5)) * ci;
-        const r = CHILD_SPREAD * (0.6 + Math.random() * 0.4);
-        cn.x = h.x + r * Math.sin(phi) * Math.cos(theta);
-        cn.y = h.y + r * Math.sin(phi) * Math.sin(theta);
-        cn.z = h.z + r * Math.cos(phi);
+        if (layoutIs2D) {
+          // 2D: distribute children in a circle around hub in XY plane
+          const theta = (2 * Math.PI * ci) / Math.max(count, 1);
+          const r = CHILD_SPREAD * (0.6 + Math.random() * 0.4);
+          cn.x = h.x + r * Math.cos(theta);
+          cn.y = h.y + r * Math.sin(theta);
+          cn.z = 0;
+        } else {
+          // 3D: Fibonacci sphere distribution around hub
+          const phi = Math.acos(1 - 2 * (ci + 0.5) / Math.max(count, 1));
+          const theta = Math.PI * (1 + Math.sqrt(5)) * ci;
+          const r = CHILD_SPREAD * (0.6 + Math.random() * 0.4);
+          cn.x = h.x + r * Math.sin(phi) * Math.cos(theta);
+          cn.y = h.y + r * Math.sin(phi) * Math.sin(theta);
+          cn.z = h.z + r * Math.cos(phi);
+        }
         cn.vx = 0; cn.vy = 0; cn.vz = 0;
         cn._parentHub = h.id;
       });
@@ -612,12 +639,20 @@
 
     // Position orphans in a cluster near the center
     orphans.forEach((o, i) => {
-      const phi = Math.acos(1 - 2 * (i + 0.5) / Math.max(orphans.length, 1));
-      const theta = Math.PI * (1 + Math.sqrt(5)) * i;
-      const r = CHILD_SPREAD * 0.8;
-      o.x = r * Math.sin(phi) * Math.cos(theta);
-      o.y = r * Math.sin(phi) * Math.sin(theta);
-      o.z = r * Math.cos(phi);
+      if (layoutIs2D) {
+        const theta = (2 * Math.PI * i) / Math.max(orphans.length, 1);
+        const r = CHILD_SPREAD * 0.8;
+        o.x = r * Math.cos(theta);
+        o.y = r * Math.sin(theta);
+        o.z = 0;
+      } else {
+        const phi = Math.acos(1 - 2 * (i + 0.5) / Math.max(orphans.length, 1));
+        const theta = Math.PI * (1 + Math.sqrt(5)) * i;
+        const r = CHILD_SPREAD * 0.8;
+        o.x = r * Math.sin(phi) * Math.cos(theta);
+        o.y = r * Math.sin(phi) * Math.sin(theta);
+        o.z = r * Math.cos(phi);
+      }
       o.vx = 0; o.vy = 0; o.vz = 0;
     });
 
@@ -742,6 +777,62 @@
     buildGraphObjects();
   }
 
+  // ─── Mode Switching ───
+  function switchGraphMode(mode) {
+    graphMode = mode;
+    modeTransition = 60; // frames to animate transition
+    simAlpha = 0.8;      // reheat simulation for new layout
+
+    // Rebuild graph with new layout positions
+    rebuildGraphObjects();
+
+    if (mode === '2d') {
+      // Disable 3D rotation, allow only pan/zoom
+      controls.enableRotate = false;
+      controls.enablePan = true;
+
+      // Animate camera to top-down view (looking down Z axis)
+      camera.up.set(0, 1, 0);
+      animateCameraTo(0, 0, 150);
+    } else {
+      // Re-enable full 3D controls
+      controls.enableRotate = true;
+      controls.enablePan = true;
+
+      // Animate camera to perspective view
+      animateCameraTo(0, 0, 120);
+    }
+  }
+
+  function animateCameraTo(tx, ty, tz) {
+    const startPos = { x: camera.position.x, y: camera.position.y, z: camera.position.z };
+    const startTarget = { x: controls.target.x, y: controls.target.y, z: controls.target.z };
+    const frames = 40;
+    let frame = 0;
+
+    function step() {
+      frame++;
+      const t = easeInOutCubic(frame / frames);
+      camera.position.set(
+        startPos.x + (tx - startPos.x) * t,
+        startPos.y + (ty - startPos.y) * t,
+        startPos.z + (tz - startPos.z) * t
+      );
+      controls.target.set(
+        startTarget.x * (1 - t),
+        startTarget.y * (1 - t),
+        startTarget.z * (1 - t)
+      );
+      controls.update();
+      if (frame < frames) requestAnimationFrame(step);
+    }
+    step();
+  }
+
+  function easeInOutCubic(t) {
+    return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+  }
+
   function createParticles() {
     if (particles) scene.remove(particles);
 
@@ -780,18 +871,19 @@
     const n = graphNodes.length;
 
     // Repulsion — all pairs, but hubs repel much more strongly
+    const is2D = graphMode === '2d';
     for (let i = 0; i < n; i++) {
       for (let j = i + 1; j < n; j++) {
         const a = graphNodes[i];
         const b = graphNodes[j];
         let dx = a.x - b.x;
         let dy = a.y - b.y;
-        let dz = a.z - b.z;
+        let dz = is2D ? 0 : (a.z - b.z);
         let dist2 = dx * dx + dy * dy + dz * dz;
         if (dist2 < 0.01) {
           dx = (Math.random() - 0.5) * 0.1;
           dy = (Math.random() - 0.5) * 0.1;
-          dz = (Math.random() - 0.5) * 0.1;
+          dz = is2D ? 0 : (Math.random() - 0.5) * 0.1;
           dist2 = dx * dx + dy * dy + dz * dz;
         }
         const dist = Math.sqrt(dist2);
@@ -801,7 +893,7 @@
         const force = REPULSION * repMul * simAlpha / dist2;
         const fx = dx / dist * force;
         const fy = dy / dist * force;
-        const fz = dz / dist * force;
+        const fz = is2D ? 0 : (dz / dist * force);
         // Hubs are "heavy" — they receive less force
         const aWeight = a._isHub ? 0.1 : 1.0;
         const bWeight = b._isHub ? 0.1 : 1.0;
@@ -819,13 +911,13 @@
       const b = graphNodes[e._ti];
       let dx = b.x - a.x;
       let dy = b.y - a.y;
-      let dz = b.z - a.z;
+      let dz = is2D ? 0 : (b.z - a.z);
       const dist = Math.sqrt(dx * dx + dy * dy + dz * dz) || 0.01;
       const displacement = dist - STRUCTURAL_SPRING_LENGTH;
       const force = STRUCTURAL_SPRING_K * displacement * simAlpha;
       const fx = dx / dist * force;
       const fy = dy / dist * force;
-      const fz = dz / dist * force;
+      const fz = is2D ? 0 : (dz / dist * force);
       const aWeight = a._isHub ? 0.05 : 1.0;
       const bWeight = b._isHub ? 0.05 : 1.0;
       a.vx += fx * aWeight; a.vy += fy * aWeight; a.vz += fz * aWeight;
@@ -841,13 +933,13 @@
       const b = graphNodes[e._ti];
       let dx = b.x - a.x;
       let dy = b.y - a.y;
-      let dz = b.z - a.z;
+      let dz = is2D ? 0 : (b.z - a.z);
       const dist = Math.sqrt(dx * dx + dy * dy + dz * dz) || 0.01;
       const displacement = dist - MEMORY_LINK_SPRING_LENGTH;
       const force = MEMORY_LINK_SPRING_K * displacement * simAlpha;
       const fx = dx / dist * force;
       const fy = dy / dist * force;
-      const fz = dz / dist * force;
+      const fz = is2D ? 0 : (dz / dist * force);
       a.vx += fx; a.vy += fy; a.vz += fz;
       b.vx -= fx; b.vy -= fy; b.vz -= fz;
     }
@@ -858,12 +950,16 @@
       if (nd._isHub) {
         nd.vx += (nd._hubAnchorX - nd.x) * 0.01 * simAlpha;
         nd.vy += (nd._hubAnchorY - nd.y) * 0.01 * simAlpha;
-        nd.vz += (nd._hubAnchorZ - nd.z) * 0.01 * simAlpha;
+        if (!is2D) {
+          nd.vz += (nd._hubAnchorZ - nd.z) * 0.01 * simAlpha;
+        }
       } else {
         // Regular center gravity for non-hubs (weak)
         nd.vx -= nd.x * CENTER_GRAVITY * simAlpha;
         nd.vy -= nd.y * CENTER_GRAVITY * simAlpha;
-        nd.vz -= nd.z * CENTER_GRAVITY * simAlpha;
+        if (!is2D) {
+          nd.vz -= nd.z * CENTER_GRAVITY * simAlpha;
+        }
       }
     }
 
@@ -873,6 +969,18 @@
       nd.vx *= DAMPING;
       nd.vy *= DAMPING;
       nd.vz *= DAMPING;
+
+      // In 2D mode, kill Z velocity and flatten Z positions
+      if (graphMode === '2d') {
+        nd.vz = 0;
+        if (modeTransition > 0) {
+          // Smoothly lerp Z toward 0 during transition
+          nd.z *= 0.9;
+        } else {
+          nd.z = 0;
+        }
+      }
+
       nd.x += nd.vx;
       nd.y += nd.vy;
       nd.z += nd.vz;
@@ -993,6 +1101,11 @@
     // Force simulation
     simulateForces();
     updatePositions();
+
+    // Mode transition countdown
+    if (modeTransition > 0) {
+      modeTransition--;
+    }
 
     // Particles
     updateParticles(elapsed);
