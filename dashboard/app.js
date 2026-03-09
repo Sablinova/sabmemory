@@ -1,4 +1,4 @@
-// sabmemory dashboard
+// sabmemory // neural interface dashboard
 (function() {
   'use strict';
 
@@ -9,16 +9,57 @@
   let projectsData = [];
   let documentsData = [];
   let statsData = {};
-  let simulation = null;
-  let svgZoom = null;
+
+  // Three.js state
+  let scene, camera, renderer, composer, controls;
+  let nodeMeshes = [];        // { mesh, data, velocity:{x,y,z} }
+  let edgeLines = null;       // THREE.LineSegments
+  let edgeLabelSprites = [];
+  let particles = null;
+  let raycaster, mouse;
+  let hoveredNode = null;
+  let graphNodes = [];        // filtered working copy
+  let graphEdges = [];
+  let graphInitialized = false;
+  let clock;
+  let frameCount = 0;
+  let lastFPSTime = 0;
+  let currentFPS = 0;
+  let simAlpha = 1.0;         // simulation cooling
+
+  // ─── Constants ───
+  const SIM_ITERATIONS = 1;
+  const REPULSION = 800;
+  const SPRING_K = 0.008;
+  const SPRING_LENGTH = 30;
+  const DAMPING = 0.88;
+  const CENTER_GRAVITY = 0.002;
+  const ALPHA_DECAY = 0.998;
+  const ALPHA_MIN = 0.001;
+  const PARTICLE_COUNT = 600;
 
   // ─── Init ───
   document.addEventListener('DOMContentLoaded', async () => {
     setupNav();
     setupSearch();
     setupModal();
+    startClock();
     await loadAll();
   });
+
+  // ─── Header Clock ───
+  function startClock() {
+    const el = document.getElementById('header-time');
+    function tick() {
+      const now = new Date();
+      const h = String(now.getHours()).padStart(2, '0');
+      const m = String(now.getMinutes()).padStart(2, '0');
+      const s = String(now.getSeconds()).padStart(2, '0');
+      el.textContent = `${h}:${m}:${s} UTC`;
+    }
+    tick();
+    setInterval(tick, 1000);
+  }
 
   // ─── Navigation ───
   function setupNav() {
@@ -126,7 +167,7 @@
     badges.push(`<span class="badge badge-type">${m.memory_type}</span>`);
     if (m.is_obsolete) badges.push('<span class="badge badge-obsolete">obsolete</span>');
     if (m.is_forgotten) badges.push('<span class="badge badge-forgotten">forgotten</span>');
-    if (!m.is_latest) badges.push('<span class="badge badge-forgotten">v${m.version}</span>');
+    if (!m.is_latest) badges.push(`<span class="badge badge-forgotten">v${m.version}</span>`);
 
     return `<div class="card" data-id="${m.id}">
       <div class="card-title">${esc(m.title)}</div>
@@ -168,7 +209,6 @@
         html += `<div class="detail-section"><h3>Tags</h3><div class="card-tags">${tags.map(t => `<span class="tag">${esc(t)}</span>`).join('')}</div></div>`;
       }
 
-      // Linked memories
       if (m.linked_memory_ids && m.linked_memory_ids.length) {
         const chips = m.linked_memory_ids.map(lid => {
           const linked = memoriesData.find(x => x.id === lid);
@@ -178,7 +218,6 @@
         html += `<div class="detail-section"><h3>Linked Memories</h3><div class="detail-links">${chips}</div></div>`;
       }
 
-      // Entities
       if (m.entity_ids && m.entity_ids.length) {
         const chips = m.entity_ids.map(eid => {
           const ent = entitiesData.find(x => x.id === eid);
@@ -188,7 +227,6 @@
         html += `<div class="detail-section"><h3>Entities</h3><div class="detail-links">${chips}</div></div>`;
       }
 
-      // Projects
       if (m.project_ids && m.project_ids.length) {
         const chips = m.project_ids.map(pid => {
           const proj = projectsData.find(x => x.id === pid);
@@ -198,7 +236,6 @@
         html += `<div class="detail-section"><h3>Projects</h3><div class="detail-links">${chips}</div></div>`;
       }
 
-      // Provenance
       const prov = [];
       if (m.source_repo) prov.push(`repo: ${m.source_repo}`);
       if (m.source_url) prov.push(`url: ${m.source_url}`);
@@ -314,157 +351,138 @@
     input.addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
   }
 
-  // ─── Knowledge Graph ───
+  // ═══════════════════════════════════════════════════════════
+  // ─── THREE.JS KNOWLEDGE GRAPH ───
+  // ═══════════════════════════════════════════════════════════
+
+  function nodeColor(d) {
+    if (d.type === 'entity') return 0xaa55ff;
+    if (d.type === 'project') return 0x00ff88;
+    if (d.is_obsolete) return 0xff3355;
+    if (d.is_forgotten) return 0x2a4a5a;
+    return 0x00d4ff;
+  }
+
+  function nodeRadius(d) {
+    if (d.type === 'entity') return 2.0;
+    if (d.type === 'project') return 2.5;
+    return 0.8 + (d.importance || 5) * 0.15;
+  }
+
+  function edgeColor(d) {
+    const t = d.type || '';
+    if (t === 'entity_assoc') return 0xaa55ff;
+    if (t === 'project_assoc') return 0x00ff88;
+    if (t === 'relationship') return 0xff6622;
+    if (t === 'entity_project') return 0xffaa00;
+    return 0x00d4ff;
+  }
+
   function initGraph() {
-    if (!graphData || !graphData.nodes.length) {
-      document.getElementById('graph-container').innerHTML = '<div class="empty-state" style="padding-top:100px"><h3>No data to visualize</h3></div>';
+    if (!graphData || !graphData.nodes || !graphData.nodes.length) {
+      document.getElementById('graph-container').innerHTML =
+        '<div class="empty-state" style="padding-top:100px"><h3>No data to visualize</h3></div>';
       return;
     }
 
     const container = document.getElementById('graph-container');
-    const svg = d3.select('#graph-svg');
+    const canvas = document.getElementById('graph-canvas');
     const width = container.clientWidth || 800;
     const height = container.clientHeight || 600;
 
-    svg.attr('viewBox', [0, 0, width, height]);
+    // ─── Scene Setup ───
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x030810);
+    scene.fog = new THREE.FogExp2(0x030810, 0.003);
 
-    // Build filtered data
-    const nodes = graphData.nodes.map(n => ({ ...n }));
-    const edges = graphData.edges.filter(e => {
-      return nodes.some(n => n.id === e.source) && nodes.some(n => n.id === e.target);
-    }).map(e => ({ ...e }));
+    camera = new THREE.PerspectiveCamera(60, width / height, 0.1, 2000);
+    camera.position.set(0, 0, 120);
 
-    // Color scale
-    function nodeColor(d) {
-      if (d.type === 'entity') return 'var(--node-entity)';
-      if (d.type === 'project') return 'var(--node-project)';
-      if (d.is_obsolete) return 'var(--red)';
-      if (d.is_forgotten) return 'var(--text-dim)';
-      return 'var(--node-memory)';
-    }
+    renderer = new THREE.WebGLRenderer({
+      canvas: canvas,
+      antialias: true,
+      alpha: false,
+    });
+    renderer.setSize(width, height);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.toneMapping = THREE.ReinhardToneMapping;
+    renderer.toneMappingExposure = 1.2;
 
-    function nodeRadius(d) {
-      if (d.type === 'entity') return 8;
-      if (d.type === 'project') return 10;
-      return 4 + (d.importance || 5) * 0.6;
-    }
+    // ─── Post-processing (Bloom) ───
+    composer = new THREE.EffectComposer(renderer);
+    const renderPass = new THREE.RenderPass(scene, camera);
+    composer.addPass(renderPass);
 
-    function linkClass(d) {
-      const t = d.type || '';
-      if (t === 'memory_link') return 'link memory-link';
-      if (t === 'entity_assoc') return 'link entity-assoc';
-      if (t === 'project_assoc') return 'link project-assoc';
-      if (t === 'relationship') return 'link relationship';
-      if (t === 'entity_project') return 'link entity-project';
-      return 'link';
-    }
+    const bloomPass = new THREE.UnrealBloomPass(
+      new THREE.Vector2(width, height),
+      1.2,   // strength
+      0.4,   // radius
+      0.2    // threshold
+    );
+    composer.addPass(bloomPass);
 
-    // Zoom
-    const g = svg.append('g');
-    svgZoom = d3.zoom()
-      .scaleExtent([0.1, 8])
-      .on('zoom', (event) => g.attr('transform', event.transform));
-    svg.call(svgZoom);
+    // ─── Controls ───
+    controls = new THREE.OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.08;
+    controls.rotateSpeed = 0.5;
+    controls.zoomSpeed = 0.8;
+    controls.minDistance = 10;
+    controls.maxDistance = 500;
+    controls.enablePan = true;
 
-    // Links
-    const link = g.append('g')
-      .selectAll('line')
-      .data(edges)
-      .join('line')
-      .attr('class', d => linkClass(d))
-      .attr('stroke-width', d => d.type === 'relationship' ? 2 : 1);
+    // ─── Raycaster ───
+    raycaster = new THREE.Raycaster();
+    raycaster.params.Points = { threshold: 1 };
+    mouse = new THREE.Vector2(-9999, -9999);
 
-    // Edge labels for relationships
-    const edgeLabels = g.append('g')
-      .selectAll('text')
-      .data(edges.filter(e => e.type === 'relationship' && e.label))
-      .join('text')
-      .text(d => d.label)
-      .attr('font-size', 8)
-      .attr('fill', 'var(--orange)')
-      .attr('text-anchor', 'middle')
-      .attr('dy', -4)
-      .style('pointer-events', 'none');
+    // ─── Build Graph Data ───
+    buildGraphObjects();
 
-    // Nodes
-    const node = g.append('g')
-      .selectAll('g')
-      .data(nodes)
-      .join('g')
-      .attr('class', 'node')
-      .call(d3.drag()
-        .on('start', dragstarted)
-        .on('drag', dragged)
-        .on('end', dragended));
+    // ─── Particles ───
+    createParticles();
 
-    node.append('circle')
-      .attr('r', d => nodeRadius(d))
-      .attr('fill', d => nodeColor(d))
-      .attr('stroke', d => d.type === 'project' ? 'var(--green)' : d.type === 'entity' ? 'var(--purple)' : 'var(--accent-dim)')
-      .attr('opacity', d => (d.is_obsolete || d.is_forgotten) ? 0.4 : 0.9);
+    // ─── Ambient Light (subtle) ───
+    const ambientLight = new THREE.AmbientLight(0x112233, 0.5);
+    scene.add(ambientLight);
 
-    // Labels for entities and projects (always visible)
-    node.filter(d => d.type === 'entity' || d.type === 'project')
-      .append('text')
-      .text(d => truncate(d.label, 20))
-      .attr('dy', d => nodeRadius(d) + 12);
-
-    // Tooltip
+    // ─── Event Listeners ───
     const tooltip = document.getElementById('graph-tooltip');
-    node.on('mouseover', (event, d) => {
-      let html = `<div class="tt-title">${esc(d.label)}</div>`;
-      html += `<div class="tt-type">${d.type}${d.entity_type ? ' / ' + d.entity_type : ''}${d.memory_type ? ' / ' + d.memory_type : ''}</div>`;
-      if (d.importance) html += `<div class="tt-content">Importance: ${d.importance}</div>`;
-      if (d.tags) {
-        const tags = parseTags(d.tags);
-        if (tags.length) html += `<div class="tt-tags">${tags.map(t => `<span class="tag">${esc(t)}</span>`).join('')}</div>`;
-      }
-      tooltip.innerHTML = html;
-      tooltip.classList.add('visible');
-      const rect = container.getBoundingClientRect();
-      tooltip.style.left = (event.clientX - rect.left + 14) + 'px';
-      tooltip.style.top = (event.clientY - rect.top - 10) + 'px';
-    })
-    .on('mousemove', (event) => {
-      const rect = container.getBoundingClientRect();
-      tooltip.style.left = (event.clientX - rect.left + 14) + 'px';
-      tooltip.style.top = (event.clientY - rect.top - 10) + 'px';
-    })
-    .on('mouseout', () => {
+
+    canvas.addEventListener('mousemove', (e) => {
+      const rect = canvas.getBoundingClientRect();
+      mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+
+      // Update tooltip position
+      const containerRect = container.getBoundingClientRect();
+      tooltip.style.left = (e.clientX - containerRect.left + 14) + 'px';
+      tooltip.style.top = (e.clientY - containerRect.top - 10) + 'px';
+    });
+
+    canvas.addEventListener('mouseleave', () => {
+      mouse.x = -9999;
+      mouse.y = -9999;
       tooltip.classList.remove('visible');
-    })
-    .on('click', (event, d) => {
-      if (d.type === 'memory') openMemory(d.raw_id);
+      if (hoveredNode) {
+        hoveredNode = null;
+        canvas.style.cursor = 'grab';
+      }
     });
 
-    // Simulation
-    simulation = d3.forceSimulation(nodes)
-      .force('link', d3.forceLink(edges).id(d => d.id).distance(80).strength(0.3))
-      .force('charge', d3.forceManyBody().strength(-120).distanceMax(400))
-      .force('center', d3.forceCenter(width / 2, height / 2))
-      .force('collision', d3.forceCollide().radius(d => nodeRadius(d) + 4))
-      .force('x', d3.forceX(width / 2).strength(0.05))
-      .force('y', d3.forceY(height / 2).strength(0.05))
-      .on('tick', () => {
-        link
-          .attr('x1', d => d.source.x)
-          .attr('y1', d => d.source.y)
-          .attr('x2', d => d.target.x)
-          .attr('y2', d => d.target.y);
+    canvas.addEventListener('click', () => {
+      if (hoveredNode && hoveredNode.data.type === 'memory') {
+        openMemory(hoveredNode.data.raw_id);
+      }
+    });
 
-        edgeLabels
-          .attr('x', d => (d.source.x + d.target.x) / 2)
-          .attr('y', d => (d.source.y + d.target.y) / 2);
-
-        node.attr('transform', d => `translate(${d.x},${d.y})`);
-      });
-
-    // Graph controls
+    // ─── Graph Controls ───
     document.getElementById('graph-reset').addEventListener('click', () => {
-      svg.transition().duration(500).call(svgZoom.transform, d3.zoomIdentity);
+      camera.position.set(0, 0, 120);
+      controls.target.set(0, 0, 0);
+      controls.update();
     });
 
-    // Filter controls
     const showObsolete = document.getElementById('show-obsolete');
     const showForgotten = document.getElementById('show-forgotten');
     const minImp = document.getElementById('min-importance');
@@ -473,71 +491,383 @@
     function applyFilters() {
       const minI = parseInt(minImp.value);
       minImpVal.textContent = minI;
-
-      node.attr('display', d => {
-        if (d.type === 'entity' || d.type === 'project') return null;
-        if (d.is_obsolete && !showObsolete.checked) return 'none';
-        if (d.is_forgotten && !showForgotten.checked) return 'none';
-        if ((d.importance || 5) < minI) return 'none';
-        return null;
-      });
-
-      const visibleIds = new Set();
-      node.each(function(d) {
-        if (d3.select(this).attr('display') !== 'none') visibleIds.add(d.id);
-      });
-
-      link.attr('display', d => {
-        const sid = typeof d.source === 'object' ? d.source.id : d.source;
-        const tid = typeof d.target === 'object' ? d.target.id : d.target;
-        return (visibleIds.has(sid) && visibleIds.has(tid)) ? null : 'none';
-      });
-
-      edgeLabels.attr('display', d => {
-        const sid = typeof d.source === 'object' ? d.source.id : d.source;
-        const tid = typeof d.target === 'object' ? d.target.id : d.target;
-        return (visibleIds.has(sid) && visibleIds.has(tid)) ? null : 'none';
-      });
+      rebuildGraphObjects();
     }
 
     showObsolete.addEventListener('change', applyFilters);
     showForgotten.addEventListener('change', applyFilters);
     minImp.addEventListener('input', applyFilters);
 
-    function dragstarted(event, d) {
-      if (!event.active) simulation.alphaTarget(0.3).restart();
-      d.fx = d.x;
-      d.fy = d.y;
+    // ─── Animation Loop ───
+    clock = new THREE.Clock();
+    graphInitialized = true;
+    animate();
+  }
+
+  function buildGraphObjects() {
+    const showObsolete = document.getElementById('show-obsolete').checked;
+    const showForgotten = document.getElementById('show-forgotten').checked;
+    const minI = parseInt(document.getElementById('min-importance').value);
+
+    // Filter nodes
+    graphNodes = graphData.nodes.filter(n => {
+      if (n.type === 'entity' || n.type === 'project') return true;
+      if (n.is_obsolete && !showObsolete) return false;
+      if (n.is_forgotten && !showForgotten) return false;
+      if ((n.importance || 5) < minI) return false;
+      return true;
+    }).map(n => ({ ...n }));
+
+    const nodeIdSet = new Set(graphNodes.map(n => n.id));
+
+    // Filter edges
+    graphEdges = graphData.edges.filter(e =>
+      nodeIdSet.has(e.source) && nodeIdSet.has(e.target)
+    ).map(e => ({ ...e }));
+
+    // Build ID -> index map
+    const idToIdx = {};
+    graphNodes.forEach((n, i) => { idToIdx[n.id] = i; });
+
+    // ─── Initialize positions (sphere distribution) ───
+    const spread = Math.max(30, graphNodes.length * 1.5);
+    graphNodes.forEach((n, i) => {
+      const phi = Math.acos(1 - 2 * (i + 0.5) / graphNodes.length);
+      const theta = Math.PI * (1 + Math.sqrt(5)) * i;
+      n.x = spread * Math.sin(phi) * Math.cos(theta) * (0.5 + Math.random() * 0.5);
+      n.y = spread * Math.sin(phi) * Math.sin(theta) * (0.5 + Math.random() * 0.5);
+      n.z = spread * Math.cos(phi) * (0.5 + Math.random() * 0.5);
+      n.vx = 0; n.vy = 0; n.vz = 0;
+    });
+
+    // ─── Create Node Meshes ───
+    nodeMeshes.forEach(nm => scene.remove(nm.mesh));
+    nodeMeshes = [];
+
+    graphNodes.forEach(n => {
+      const r = nodeRadius(n);
+      const color = nodeColor(n);
+      const geo = new THREE.SphereGeometry(r, 16, 12);
+      const mat = new THREE.MeshBasicMaterial({
+        color: color,
+        transparent: true,
+        opacity: (n.is_obsolete || n.is_forgotten) ? 0.35 : 0.9,
+      });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.position.set(n.x, n.y, n.z);
+      scene.add(mesh);
+
+      // Glow shell
+      const glowGeo = new THREE.SphereGeometry(r * 1.6, 12, 8);
+      const glowMat = new THREE.MeshBasicMaterial({
+        color: color,
+        transparent: true,
+        opacity: 0.08,
+        side: THREE.BackSide,
+      });
+      const glowMesh = new THREE.Mesh(glowGeo, glowMat);
+      mesh.add(glowMesh);
+
+      nodeMeshes.push({ mesh, data: n, glowMesh, glowMat });
+    });
+
+    // ─── Create Edges ───
+    if (edgeLines) scene.remove(edgeLines);
+
+    if (graphEdges.length > 0) {
+      const positions = new Float32Array(graphEdges.length * 6);
+      const colors = new Float32Array(graphEdges.length * 6);
+
+      graphEdges.forEach((e, i) => {
+        const si = idToIdx[e.source];
+        const ti = idToIdx[e.target];
+        if (si === undefined || ti === undefined) return;
+        const s = graphNodes[si];
+        const t = graphNodes[ti];
+        const off = i * 6;
+        positions[off]     = s.x; positions[off + 1] = s.y; positions[off + 2] = s.z;
+        positions[off + 3] = t.x; positions[off + 4] = t.y; positions[off + 5] = t.z;
+
+        const c = new THREE.Color(edgeColor(e));
+        colors[off]     = c.r; colors[off + 1] = c.g; colors[off + 2] = c.b;
+        colors[off + 3] = c.r; colors[off + 4] = c.g; colors[off + 5] = c.b;
+
+        // Store indices for fast updates
+        e._si = si;
+        e._ti = ti;
+      });
+
+      const lineGeo = new THREE.BufferGeometry();
+      lineGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      lineGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+      const lineMat = new THREE.LineBasicMaterial({
+        vertexColors: true,
+        transparent: true,
+        opacity: 0.3,
+        linewidth: 1,
+      });
+
+      edgeLines = new THREE.LineSegments(lineGeo, lineMat);
+      scene.add(edgeLines);
     }
 
-    function dragged(event, d) {
-      d.fx = event.x;
-      d.fy = event.y;
+    // Update HUD
+    document.getElementById('hud-nodes').textContent = graphNodes.length;
+    document.getElementById('hud-edges').textContent = graphEdges.length;
+
+    // Reset simulation
+    simAlpha = 1.0;
+  }
+
+  function rebuildGraphObjects() {
+    buildGraphObjects();
+  }
+
+  function createParticles() {
+    if (particles) scene.remove(particles);
+
+    const positions = new Float32Array(PARTICLE_COUNT * 3);
+    const alphas = new Float32Array(PARTICLE_COUNT);
+
+    for (let i = 0; i < PARTICLE_COUNT; i++) {
+      positions[i * 3]     = (Math.random() - 0.5) * 400;
+      positions[i * 3 + 1] = (Math.random() - 0.5) * 400;
+      positions[i * 3 + 2] = (Math.random() - 0.5) * 400;
+      alphas[i] = Math.random();
     }
 
-    function dragended(event, d) {
-      if (!event.active) simulation.alphaTarget(0);
-      d.fx = null;
-      d.fy = null;
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+
+    const mat = new THREE.PointsMaterial({
+      color: 0x00d4ff,
+      size: 0.4,
+      transparent: true,
+      opacity: 0.25,
+      sizeAttenuation: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+
+    particles = new THREE.Points(geo, mat);
+    scene.add(particles);
+    particles._alphas = alphas;
+  }
+
+  // ─── Force Simulation (3D) ───
+  function simulateForces() {
+    if (simAlpha < ALPHA_MIN) return;
+
+    const n = graphNodes.length;
+    const idToIdx = {};
+    graphNodes.forEach((nd, i) => { idToIdx[nd.id] = i; });
+
+    // Repulsion (Barnes-Hut approximation not needed for <200 nodes — brute force)
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        const a = graphNodes[i];
+        const b = graphNodes[j];
+        let dx = a.x - b.x;
+        let dy = a.y - b.y;
+        let dz = a.z - b.z;
+        let dist2 = dx * dx + dy * dy + dz * dz;
+        if (dist2 < 0.01) {
+          dx = (Math.random() - 0.5) * 0.1;
+          dy = (Math.random() - 0.5) * 0.1;
+          dz = (Math.random() - 0.5) * 0.1;
+          dist2 = dx * dx + dy * dy + dz * dz;
+        }
+        const dist = Math.sqrt(dist2);
+        const force = REPULSION * simAlpha / dist2;
+        const fx = dx / dist * force;
+        const fy = dy / dist * force;
+        const fz = dz / dist * force;
+        a.vx += fx; a.vy += fy; a.vz += fz;
+        b.vx -= fx; b.vy -= fy; b.vz -= fz;
+      }
+    }
+
+    // Spring forces (edges)
+    for (let i = 0; i < graphEdges.length; i++) {
+      const e = graphEdges[i];
+      const si = e._si;
+      const ti = e._ti;
+      if (si === undefined || ti === undefined) continue;
+      const a = graphNodes[si];
+      const b = graphNodes[ti];
+      let dx = b.x - a.x;
+      let dy = b.y - a.y;
+      let dz = b.z - a.z;
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz) || 0.01;
+      const displacement = dist - SPRING_LENGTH;
+      const force = SPRING_K * displacement * simAlpha;
+      const fx = dx / dist * force;
+      const fy = dy / dist * force;
+      const fz = dz / dist * force;
+      a.vx += fx; a.vy += fy; a.vz += fz;
+      b.vx -= fx; b.vy -= fy; b.vz -= fz;
+    }
+
+    // Center gravity
+    for (let i = 0; i < n; i++) {
+      const nd = graphNodes[i];
+      nd.vx -= nd.x * CENTER_GRAVITY * simAlpha;
+      nd.vy -= nd.y * CENTER_GRAVITY * simAlpha;
+      nd.vz -= nd.z * CENTER_GRAVITY * simAlpha;
+    }
+
+    // Apply velocity + damping
+    for (let i = 0; i < n; i++) {
+      const nd = graphNodes[i];
+      nd.vx *= DAMPING;
+      nd.vy *= DAMPING;
+      nd.vz *= DAMPING;
+      nd.x += nd.vx;
+      nd.y += nd.vy;
+      nd.z += nd.vz;
+    }
+
+    simAlpha *= ALPHA_DECAY;
+  }
+
+  function updatePositions() {
+    // Update node meshes
+    for (let i = 0; i < nodeMeshes.length; i++) {
+      const nm = nodeMeshes[i];
+      nm.mesh.position.set(nm.data.x, nm.data.y, nm.data.z);
+    }
+
+    // Update edge lines
+    if (edgeLines && graphEdges.length > 0) {
+      const pos = edgeLines.geometry.attributes.position.array;
+      for (let i = 0; i < graphEdges.length; i++) {
+        const e = graphEdges[i];
+        if (e._si === undefined || e._ti === undefined) continue;
+        const s = graphNodes[e._si];
+        const t = graphNodes[e._ti];
+        const off = i * 6;
+        pos[off]     = s.x; pos[off + 1] = s.y; pos[off + 2] = s.z;
+        pos[off + 3] = t.x; pos[off + 4] = t.y; pos[off + 5] = t.z;
+      }
+      edgeLines.geometry.attributes.position.needsUpdate = true;
+    }
+  }
+
+  function updateParticles(dt) {
+    if (!particles) return;
+    const pos = particles.geometry.attributes.position.array;
+    const alphas = particles._alphas;
+    for (let i = 0; i < PARTICLE_COUNT; i++) {
+      const i3 = i * 3;
+      // Gentle drift
+      pos[i3]     += Math.sin(alphas[i] * 6.28 + dt * 0.5) * 0.02;
+      pos[i3 + 1] += Math.cos(alphas[i] * 3.14 + dt * 0.3) * 0.02;
+      pos[i3 + 2] += Math.sin(alphas[i] * 4.71 + dt * 0.4) * 0.015;
+      alphas[i] += 0.001;
+    }
+    particles.geometry.attributes.position.needsUpdate = true;
+    particles.rotation.y += 0.0001;
+  }
+
+  function doRaycast() {
+    if (!raycaster || mouse.x < -5) return;
+
+    raycaster.setFromCamera(mouse, camera);
+    const meshes = nodeMeshes.map(nm => nm.mesh);
+    const intersects = raycaster.intersectObjects(meshes, false);
+
+    const tooltip = document.getElementById('graph-tooltip');
+    const canvas = document.getElementById('graph-canvas');
+
+    if (intersects.length > 0) {
+      const hit = intersects[0].object;
+      const nm = nodeMeshes.find(nm => nm.mesh === hit);
+      if (nm) {
+        if (hoveredNode !== nm) {
+          // Unhover previous
+          if (hoveredNode) {
+            hoveredNode.glowMat.opacity = 0.08;
+          }
+          hoveredNode = nm;
+          nm.glowMat.opacity = 0.25;
+          canvas.style.cursor = nm.data.type === 'memory' ? 'pointer' : 'default';
+
+          // Update tooltip
+          const d = nm.data;
+          let html = `<div class="tt-title">${esc(d.label)}</div>`;
+          html += `<div class="tt-type">${d.type}${d.entity_type ? ' / ' + d.entity_type : ''}${d.memory_type ? ' / ' + d.memory_type : ''}</div>`;
+          if (d.importance) html += `<div class="tt-content">Importance: ${d.importance}</div>`;
+          if (d.tags) {
+            const tags = parseTags(d.tags);
+            if (tags.length) html += `<div class="tt-tags">${tags.map(t => `<span class="tag">${esc(t)}</span>`).join('')}</div>`;
+          }
+          tooltip.innerHTML = html;
+          tooltip.classList.add('visible');
+        }
+      }
+    } else {
+      if (hoveredNode) {
+        hoveredNode.glowMat.opacity = 0.08;
+        hoveredNode = null;
+        canvas.style.cursor = 'grab';
+        tooltip.classList.remove('visible');
+      }
+    }
+  }
+
+  function animate() {
+    if (!graphInitialized) return;
+    requestAnimationFrame(animate);
+
+    const dt = clock.getDelta();
+    const elapsed = clock.getElapsedTime();
+
+    // Force simulation
+    simulateForces();
+    updatePositions();
+
+    // Particles
+    updateParticles(elapsed);
+
+    // Raycasting (throttle to every 3 frames for perf)
+    frameCount++;
+    if (frameCount % 3 === 0) {
+      doRaycast();
+    }
+
+    // Controls
+    controls.update();
+
+    // Render with bloom
+    composer.render();
+
+    // FPS counter
+    if (elapsed - lastFPSTime >= 1.0) {
+      currentFPS = Math.round(frameCount / (elapsed - lastFPSTime));
+      frameCount = 0;
+      lastFPSTime = elapsed;
+      document.getElementById('hud-fps').textContent = currentFPS;
     }
   }
 
   function resizeGraph() {
+    if (!graphInitialized) return;
     const container = document.getElementById('graph-container');
-    const svg = d3.select('#graph-svg');
     const width = container.clientWidth;
     const height = container.clientHeight;
-    svg.attr('viewBox', [0, 0, width, height]);
-    if (simulation) {
-      simulation.force('center', d3.forceCenter(width / 2, height / 2));
-      simulation.force('x', d3.forceX(width / 2).strength(0.05));
-      simulation.force('y', d3.forceY(height / 2).strength(0.05));
-      simulation.alpha(0.3).restart();
-    }
+    if (width === 0 || height === 0) return;
+
+    camera.aspect = width / height;
+    camera.updateProjectionMatrix();
+    renderer.setSize(width, height);
+    composer.setSize(width, height);
   }
 
   window.addEventListener('resize', () => {
-    if (document.getElementById('view-graph').classList.contains('active')) resizeGraph();
+    if (document.getElementById('view-graph').classList.contains('active')) {
+      resizeGraph();
+    }
   });
 
   // ─── Helpers ───
