@@ -12,12 +12,13 @@
 
   // Three.js state
   let scene, camera, renderer, composer, controls;
-  let nodeMeshes = [];        // { mesh, data, velocity:{x,y,z} }
-  let edgeLines = null;       // THREE.LineSegments
+  let nodeMeshes = [];        // { mesh, data, velocity:{x,y,z}, label, ring }
+  let edgeLines = null;       // THREE.LineSegments (structural)
   let edgeLabelSprites = [];
   let particles = null;
   let raycaster, mouse;
   let hoveredNode = null;
+  let hoveredEdge = null;     // { edgeData, lineGroup:'structural'|'memlink', drawIdx }
   let graphNodes = [];        // filtered working copy
   let graphEdges = [];
   let graphInitialized = false;
@@ -28,6 +29,9 @@
   let simAlpha = 1.0;         // simulation cooling
   let graphMode = '3d';       // '3d' or '2d'
   let modeTransition = 0;     // 0 = done, >0 = transitioning
+  let adjacency = {};         // nodeId -> { nodes: Set, structEdgeIdx: [], memEdgeIdx: [] }
+  let highlightActive = false;
+  let pulsePhase = 0;         // for animated pulse effects
 
   // ─── Constants ───
   const REPULSION = 600;
@@ -384,6 +388,73 @@
     return 0x00d4ff;
   }
 
+  function edgeTypeName(t) {
+    if (t === 'entity_assoc') return 'ENTITY LINK';
+    if (t === 'project_assoc') return 'PROJECT LINK';
+    if (t === 'relationship') return 'RELATIONSHIP';
+    if (t === 'entity_project') return 'ENTITY-PROJECT';
+    if (t === 'memory_link') return 'MEMORY LINK';
+    return t.toUpperCase();
+  }
+
+  function createTextSprite(text, color, fontSize) {
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    const sz = fontSize || 48;
+    ctx.font = `bold ${sz}px Orbitron, sans-serif`;
+    const metrics = ctx.measureText(text);
+    const w = Math.ceil(metrics.width) + 16;
+    const h = sz + 16;
+    canvas.width = w;
+    canvas.height = h;
+    ctx.font = `bold ${sz}px Orbitron, sans-serif`;
+    ctx.fillStyle = color || '#00d4ff';
+    ctx.shadowColor = color || '#00d4ff';
+    ctx.shadowBlur = 8;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, w / 2, h / 2);
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.minFilter = THREE.LinearFilter;
+    const mat = new THREE.SpriteMaterial({
+      map: tex,
+      transparent: true,
+      opacity: 0.9,
+      depthTest: false,
+      sizeAttenuation: true,
+    });
+    const sprite = new THREE.Sprite(mat);
+    sprite.scale.set(w / 20, h / 20, 1);
+    return sprite;
+  }
+
+  function buildAdjacency() {
+    adjacency = {};
+    graphNodes.forEach(n => {
+      adjacency[n.id] = { nodes: new Set(), structEdgeIdx: [], memEdgeIdx: [] };
+    });
+    const sEdges = window._structuralEdges || [];
+    sEdges.forEach((e, i) => {
+      if (e._si === undefined || e._ti === undefined) return;
+      const sId = graphNodes[e._si].id;
+      const tId = graphNodes[e._ti].id;
+      adjacency[sId].nodes.add(tId);
+      adjacency[tId].nodes.add(sId);
+      adjacency[sId].structEdgeIdx.push(i);
+      adjacency[tId].structEdgeIdx.push(i);
+    });
+    const mEdges = window._memoryLinkEdges || [];
+    mEdges.forEach((e, i) => {
+      if (e._si === undefined || e._ti === undefined) return;
+      const sId = graphNodes[e._si].id;
+      const tId = graphNodes[e._ti].id;
+      adjacency[sId].nodes.add(tId);
+      adjacency[tId].nodes.add(sId);
+      adjacency[sId].memEdgeIdx.push(i);
+      adjacency[tId].memEdgeIdx.push(i);
+    });
+  }
+
   function initGraph() {
     if (!graphData || !graphData.nodes || !graphData.nodes.length) {
       document.getElementById('graph-container').innerHTML =
@@ -471,10 +542,10 @@
       mouse.x = -9999;
       mouse.y = -9999;
       tooltip.classList.remove('visible');
-      if (hoveredNode) {
-        hoveredNode = null;
-        canvas.style.cursor = 'grab';
-      }
+      clearHighlights();
+      hoveredNode = null;
+      hoveredEdge = null;
+      canvas.style.cursor = 'grab';
     });
 
     canvas.addEventListener('click', () => {
@@ -767,6 +838,61 @@
     window._structuralEdges = structuralEdges;
     window._memoryLinkEdges = memoryLinkEdges;
 
+    // Build adjacency map for highlight logic
+    buildAdjacency();
+
+    // ─── Text Labels for Hub Nodes ───
+    edgeLabelSprites.forEach(s => scene.remove(s));
+    edgeLabelSprites = [];
+
+    nodeMeshes.forEach(nm => {
+      const n = nm.data;
+      if (n._isHub) {
+        // Always-visible label for hubs
+        const color = n.type === 'entity' ? '#aa55ff' : '#00ff88';
+        const label = createTextSprite(n.label, color, 36);
+        const r = nodeRadius(n);
+        label.position.set(n.x, n.y + r + 3, n.z);
+        scene.add(label);
+        nm.label = label;
+        nm.labelColor = color;
+        edgeLabelSprites.push(label);
+      } else {
+        // Create hidden label for memory nodes (shown on hover)
+        const label = createTextSprite(truncate(n.label, 40), '#00d4ff', 28);
+        const r = nodeRadius(n);
+        label.position.set(n.x, n.y + r + 2, n.z);
+        label.visible = false;
+        scene.add(label);
+        nm.label = label;
+        nm.labelColor = '#00d4ff';
+        edgeLabelSprites.push(label);
+      }
+
+      // ─── Importance Ring ───
+      if (n.type === 'memory' && n.importance) {
+        const impNorm = (n.importance || 5) / 10;
+        const ringGeo = new THREE.RingGeometry(
+          nodeRadius(n) * 1.8,
+          nodeRadius(n) * 2.2,
+          24
+        );
+        const hue = impNorm * 0.33; // red(0) -> green(0.33)
+        const ringColor = new THREE.Color().setHSL(hue, 1, 0.5);
+        const ringMat = new THREE.MeshBasicMaterial({
+          color: ringColor,
+          transparent: true,
+          opacity: 0.25 + impNorm * 0.2,
+          side: THREE.DoubleSide,
+        });
+        const ring = new THREE.Mesh(ringGeo, ringMat);
+        ring.lookAt(camera.position);
+        nm.mesh.add(ring);
+        nm.ring = ring;
+        nm.ringMat = ringMat;
+      }
+    });
+
     // Update HUD
     document.getElementById('hud-nodes').textContent = graphNodes.length;
     document.getElementById('hud-edges').textContent = allEdges.length;
@@ -994,10 +1120,23 @@
   }
 
   function updatePositions() {
-    // Update node meshes
+    // Update node meshes + labels
     for (let i = 0; i < nodeMeshes.length; i++) {
       const nm = nodeMeshes[i];
       nm.mesh.position.set(nm.data.x, nm.data.y, nm.data.z);
+      if (nm.label) {
+        const r = nodeRadius(nm.data);
+        const yOff = nm.data._isHub ? r + 3 : r + 2;
+        nm.label.position.set(nm.data.x, nm.data.y + yOff, nm.data.z);
+      }
+      // Make importance rings face camera
+      if (nm.ring) {
+        nm.ring.lookAt(
+          camera.position.x - nm.mesh.position.x,
+          camera.position.y - nm.mesh.position.y,
+          camera.position.z - nm.mesh.position.z
+        );
+      }
     }
 
     // Update structural edge lines
@@ -1049,6 +1188,252 @@
     particles.rotation.y += 0.0001;
   }
 
+  function pointToSegmentDist(px, py, pz, ax, ay, az, bx, by, bz) {
+    const dx = bx - ax, dy = by - ay, dz = bz - az;
+    const len2 = dx * dx + dy * dy + dz * dz;
+    if (len2 < 0.0001) return Math.sqrt((px-ax)*(px-ax)+(py-ay)*(py-ay)+(pz-az)*(pz-az));
+    let t = ((px-ax)*dx + (py-ay)*dy + (pz-az)*dz) / len2;
+    t = Math.max(0, Math.min(1, t));
+    const cx = ax + t * dx, cy = ay + t * dy, cz = az + t * dz;
+    return Math.sqrt((px-cx)*(px-cx)+(py-cy)*(py-cy)+(pz-cz)*(pz-cz));
+  }
+
+  function clearHighlights() {
+    if (!highlightActive) return;
+    highlightActive = false;
+    hoveredEdge = null;
+
+    // Restore all node opacities and reset scale
+    nodeMeshes.forEach(nm => {
+      const isObs = nm.data.is_obsolete || nm.data.is_forgotten;
+      nm.mesh.material.opacity = isObs ? 0.35 : 0.9;
+      nm.mesh.scale.set(1, 1, 1);
+      nm.glowMat.opacity = nm.data._isHub ? 0.15 : 0.08;
+      if (nm.label && !nm.data._isHub) nm.label.visible = false;
+      if (nm.label && nm.data._isHub) nm.label.material.opacity = 0.9;
+    });
+
+    // Restore edge opacities
+    if (edgeLines) edgeLines.material.opacity = 0.85;
+    if (window._memLinkLines) window._memLinkLines.material.opacity = 0.2;
+
+    // Restore structural edge colors
+    if (edgeLines) {
+      const sEdges = window._structuralEdges || [];
+      const colors = edgeLines.geometry.attributes.color.array;
+      sEdges.forEach((e, i) => {
+        const c = new THREE.Color(edgeColor(e));
+        const off = i * 6;
+        colors[off] = c.r; colors[off+1] = c.g; colors[off+2] = c.b;
+        colors[off+3] = c.r; colors[off+4] = c.g; colors[off+5] = c.b;
+      });
+      edgeLines.geometry.attributes.color.needsUpdate = true;
+    }
+
+    // Restore memory link edge colors
+    if (window._memLinkLines) {
+      const mEdges = window._memoryLinkEdges || [];
+      const colors = window._memLinkLines.geometry.attributes.color.array;
+      mEdges.forEach((e, i) => {
+        const off = i * 6;
+        colors[off] = 0; colors[off+1] = 0.4; colors[off+2] = 0.6;
+        colors[off+3] = 0; colors[off+4] = 0.4; colors[off+5] = 0.6;
+      });
+      window._memLinkLines.geometry.attributes.color.needsUpdate = true;
+    }
+
+    // Hide info panel
+    const infoPanel = document.getElementById('graph-info-panel');
+    if (infoPanel) infoPanel.classList.remove('visible');
+  }
+
+  function highlightNode(nm) {
+    highlightActive = true;
+    const nodeId = nm.data.id;
+    const adj = adjacency[nodeId];
+    if (!adj) return;
+
+    const connectedNodes = adj.nodes;
+
+    // Dim all nodes, brighten connected ones
+    nodeMeshes.forEach(other => {
+      if (other === nm) {
+        // Hovered node — bright + pulsing glow
+        other.mesh.material.opacity = 1.0;
+        other.glowMat.opacity = 0.4;
+        if (other.label) { other.label.visible = true; other.label.material.opacity = 1.0; }
+      } else if (connectedNodes.has(other.data.id)) {
+        // Connected neighbor — bright
+        other.mesh.material.opacity = 0.9;
+        other.glowMat.opacity = 0.2;
+        if (other.label) { other.label.visible = true; other.label.material.opacity = 0.8; }
+      } else {
+        // Unrelated — dim
+        other.mesh.material.opacity = 0.08;
+        other.glowMat.opacity = 0.02;
+        if (other.label && !other.data._isHub) other.label.visible = false;
+        if (other.label && other.data._isHub) other.label.material.opacity = 0.15;
+      }
+    });
+
+    // Dim all edges, brighten connected ones
+    const sEdges = window._structuralEdges || [];
+    const mEdges = window._memoryLinkEdges || [];
+
+    // Structural edges
+    if (edgeLines) {
+      edgeLines.material.opacity = 0.85;
+      const colors = edgeLines.geometry.attributes.color.array;
+      const connectedStructIdx = new Set(adj.structEdgeIdx);
+      sEdges.forEach((e, i) => {
+        const off = i * 6;
+        if (connectedStructIdx.has(i)) {
+          // Connected — bright white-ish glow
+          const c = new THREE.Color(edgeColor(e));
+          c.lerp(new THREE.Color(0xffffff), 0.4);
+          colors[off] = c.r; colors[off+1] = c.g; colors[off+2] = c.b;
+          colors[off+3] = c.r; colors[off+4] = c.g; colors[off+5] = c.b;
+        } else {
+          // Not connected — very dim
+          colors[off] = 0.03; colors[off+1] = 0.05; colors[off+2] = 0.08;
+          colors[off+3] = 0.03; colors[off+4] = 0.05; colors[off+5] = 0.08;
+        }
+      });
+      edgeLines.geometry.attributes.color.needsUpdate = true;
+    }
+
+    // Memory link edges
+    if (window._memLinkLines) {
+      window._memLinkLines.material.opacity = 0.35;
+      const colors = window._memLinkLines.geometry.attributes.color.array;
+      const connectedMemIdx = new Set(adj.memEdgeIdx);
+      mEdges.forEach((e, i) => {
+        const off = i * 6;
+        if (connectedMemIdx.has(i)) {
+          colors[off] = 0; colors[off+1] = 0.7; colors[off+2] = 1.0;
+          colors[off+3] = 0; colors[off+4] = 0.7; colors[off+5] = 1.0;
+        } else {
+          colors[off] = 0.02; colors[off+1] = 0.04; colors[off+2] = 0.06;
+          colors[off+3] = 0.02; colors[off+4] = 0.04; colors[off+5] = 0.06;
+        }
+      });
+      window._memLinkLines.geometry.attributes.color.needsUpdate = true;
+    }
+
+    // Update info panel
+    updateInfoPanel(nm.data, connectedNodes);
+  }
+
+  function highlightEdgeByIndex(edgeData, group, drawIdx) {
+    highlightActive = true;
+    hoveredEdge = { edgeData, group, drawIdx };
+
+    const si = edgeData._si;
+    const ti = edgeData._ti;
+    if (si === undefined || ti === undefined) return;
+
+    const srcNode = graphNodes[si];
+    const tgtNode = graphNodes[ti];
+    const endpointIds = new Set([srcNode.id, tgtNode.id]);
+
+    // Dim all nodes except endpoints
+    nodeMeshes.forEach(nm => {
+      if (endpointIds.has(nm.data.id)) {
+        nm.mesh.material.opacity = 1.0;
+        nm.glowMat.opacity = 0.3;
+        if (nm.label) { nm.label.visible = true; nm.label.material.opacity = 1.0; }
+      } else {
+        nm.mesh.material.opacity = 0.08;
+        nm.glowMat.opacity = 0.02;
+        if (nm.label && !nm.data._isHub) nm.label.visible = false;
+        if (nm.label && nm.data._isHub) nm.label.material.opacity = 0.15;
+      }
+    });
+
+    // Dim all edges except the hovered one
+    const sEdges = window._structuralEdges || [];
+    const mEdges = window._memoryLinkEdges || [];
+
+    if (edgeLines) {
+      const colors = edgeLines.geometry.attributes.color.array;
+      sEdges.forEach((e, i) => {
+        const off = i * 6;
+        if (group === 'structural' && i === drawIdx) {
+          colors[off] = 1; colors[off+1] = 1; colors[off+2] = 1;
+          colors[off+3] = 1; colors[off+4] = 1; colors[off+5] = 1;
+        } else {
+          colors[off] = 0.03; colors[off+1] = 0.05; colors[off+2] = 0.08;
+          colors[off+3] = 0.03; colors[off+4] = 0.05; colors[off+5] = 0.08;
+        }
+      });
+      edgeLines.geometry.attributes.color.needsUpdate = true;
+    }
+
+    if (window._memLinkLines) {
+      const colors = window._memLinkLines.geometry.attributes.color.array;
+      mEdges.forEach((e, i) => {
+        const off = i * 6;
+        if (group === 'memlink' && i === drawIdx) {
+          colors[off] = 0; colors[off+1] = 1; colors[off+2] = 1;
+          colors[off+3] = 0; colors[off+4] = 1; colors[off+5] = 1;
+        } else {
+          colors[off] = 0.02; colors[off+1] = 0.04; colors[off+2] = 0.06;
+          colors[off+3] = 0.02; colors[off+4] = 0.04; colors[off+5] = 0.06;
+        }
+      });
+      window._memLinkLines.geometry.attributes.color.needsUpdate = true;
+    }
+  }
+
+  function updateInfoPanel(nodeData, connectedNodeIds) {
+    const panel = document.getElementById('graph-info-panel');
+    if (!panel) return;
+
+    const neighbors = [];
+    connectedNodeIds.forEach(nid => {
+      const n = graphNodes.find(gn => gn.id === nid);
+      if (n) neighbors.push(n);
+    });
+
+    // Sort: hubs first, then by importance
+    neighbors.sort((a, b) => {
+      if (a._isHub && !b._isHub) return -1;
+      if (!a._isHub && b._isHub) return 1;
+      return (b.importance || 5) - (a.importance || 5);
+    });
+
+    const colorMap = { entity: 'var(--purple)', project: 'var(--green)', memory: 'var(--accent)' };
+    const typeIcon = { entity: '&#9650;', project: '&#9679;', memory: '&#9632;' };
+
+    let html = `<div class="info-header">
+      <span class="info-type" style="color:${colorMap[nodeData.type] || 'var(--accent)'}">${typeIcon[nodeData.type] || ''} ${(nodeData.type || '').toUpperCase()}</span>
+      <span class="info-title">${esc(truncate(nodeData.label, 50))}</span>
+    </div>`;
+
+    if (nodeData.importance) {
+      html += `<div class="info-importance"><span class="imp-bar" style="width:${nodeData.importance * 10}%"></span><span class="imp-text">IMP ${nodeData.importance}/10</span></div>`;
+    }
+
+    html += `<div class="info-connections-header">${neighbors.length} CONNECTION${neighbors.length !== 1 ? 'S' : ''}</div>`;
+    html += '<div class="info-connections">';
+    neighbors.slice(0, 12).forEach(n => {
+      const c = colorMap[n.type] || 'var(--accent)';
+      const icon = typeIcon[n.type] || '';
+      html += `<div class="info-conn-item">
+        <span class="info-conn-dot" style="color:${c}">${icon}</span>
+        <span class="info-conn-label">${esc(truncate(n.label, 35))}</span>
+        ${n.importance ? `<span class="info-conn-imp">${n.importance}</span>` : ''}
+      </div>`;
+    });
+    if (neighbors.length > 12) {
+      html += `<div class="info-conn-more">+${neighbors.length - 12} more</div>`;
+    }
+    html += '</div>';
+
+    panel.innerHTML = html;
+    panel.classList.add('visible');
+  }
+
   function doRaycast() {
     if (!raycaster || mouse.x < -5) return;
 
@@ -1059,24 +1444,27 @@
     const tooltip = document.getElementById('graph-tooltip');
     const canvas = document.getElementById('graph-canvas');
 
+    // ── Check node hover first ──
     if (intersects.length > 0) {
       const hit = intersects[0].object;
       const nm = nodeMeshes.find(nm => nm.mesh === hit);
       if (nm) {
         if (hoveredNode !== nm) {
-          // Unhover previous
-          if (hoveredNode) {
-            hoveredNode.glowMat.opacity = 0.08;
-          }
+          clearHighlights();
           hoveredNode = nm;
-          nm.glowMat.opacity = 0.25;
+          hoveredEdge = null;
           canvas.style.cursor = nm.data.type === 'memory' ? 'pointer' : 'default';
+
+          // Highlight this node + connections
+          highlightNode(nm);
 
           // Update tooltip
           const d = nm.data;
           let html = `<div class="tt-title">${esc(d.label)}</div>`;
           html += `<div class="tt-type">${d.type}${d.entity_type ? ' / ' + d.entity_type : ''}${d.memory_type ? ' / ' + d.memory_type : ''}</div>`;
-          if (d.importance) html += `<div class="tt-content">Importance: ${d.importance}</div>`;
+          if (d.importance) html += `<div class="tt-content">Importance: ${d.importance}/10</div>`;
+          const adj = adjacency[d.id];
+          if (adj) html += `<div class="tt-content">${adj.nodes.size} connection${adj.nodes.size !== 1 ? 's' : ''}</div>`;
           if (d.tags) {
             const tags = parseTags(d.tags);
             if (tags.length) html += `<div class="tt-tags">${tags.map(t => `<span class="tag">${esc(t)}</span>`).join('')}</div>`;
@@ -1084,14 +1472,85 @@
           tooltip.innerHTML = html;
           tooltip.classList.add('visible');
         }
+        return;
       }
-    } else {
-      if (hoveredNode) {
-        hoveredNode.glowMat.opacity = 0.08;
+    }
+
+    // ── Check edge hover (line proximity) ──
+    const ray = raycaster.ray;
+    const threshold = graphMode === '2d' ? 2.5 : 1.8;
+    let closestEdge = null;
+    let closestDist = threshold;
+    let closestGroup = null;
+    let closestIdx = -1;
+
+    // Project mouse to a world point on the near plane for distance calcs
+    const sEdges = window._structuralEdges || [];
+    const mEdges = window._memoryLinkEdges || [];
+
+    function checkEdges(edges, group) {
+      for (let i = 0; i < edges.length; i++) {
+        const e = edges[i];
+        if (e._si === undefined || e._ti === undefined) continue;
+        const s = graphNodes[e._si];
+        const t = graphNodes[e._ti];
+
+        // Project endpoints to screen and find closest point on line segment
+        const sv = new THREE.Vector3(s.x, s.y, s.z);
+        const tv = new THREE.Vector3(t.x, t.y, t.z);
+        const mid = new THREE.Vector3().addVectors(sv, tv).multiplyScalar(0.5);
+
+        // Distance from ray to line segment midpoint (rough but fast)
+        const toMid = new THREE.Vector3().subVectors(mid, ray.origin);
+        const proj = toMid.dot(ray.direction);
+        if (proj < 0) continue; // behind camera
+
+        const closestOnRay = new THREE.Vector3().copy(ray.direction).multiplyScalar(proj).add(ray.origin);
+        // Now check distance from closestOnRay to the actual line segment
+        const dist = pointToSegmentDist(
+          closestOnRay.x, closestOnRay.y, closestOnRay.z,
+          s.x, s.y, s.z, t.x, t.y, t.z
+        );
+
+        if (dist < closestDist) {
+          closestDist = dist;
+          closestEdge = e;
+          closestGroup = group;
+          closestIdx = i;
+        }
+      }
+    }
+
+    checkEdges(sEdges, 'structural');
+    checkEdges(mEdges, 'memlink');
+
+    if (closestEdge) {
+      if (!hoveredEdge || hoveredEdge.drawIdx !== closestIdx || hoveredEdge.group !== closestGroup) {
+        clearHighlights();
         hoveredNode = null;
-        canvas.style.cursor = 'grab';
-        tooltip.classList.remove('visible');
+        canvas.style.cursor = 'crosshair';
+
+        highlightEdgeByIndex(closestEdge, closestGroup, closestIdx);
+
+        // Edge tooltip
+        const s = graphNodes[closestEdge._si];
+        const t = graphNodes[closestEdge._ti];
+        let html = `<div class="tt-title">${edgeTypeName(closestEdge.type)}</div>`;
+        html += `<div class="tt-type">${esc(s.label)} &harr; ${esc(t.label)}</div>`;
+        if (closestEdge.label) html += `<div class="tt-content">${esc(closestEdge.label)}</div>`;
+        tooltip.innerHTML = html;
+        tooltip.classList.add('visible');
       }
+      return;
+    }
+
+    // ── Nothing hovered ──
+    if (hoveredNode || hoveredEdge) {
+      clearHighlights();
+      hoveredNode = null;
+      hoveredEdge = null;
+      canvas.style.cursor = 'grab';
+      tooltip.classList.remove('visible');
     }
   }
 
@@ -1111,12 +1570,22 @@
       modeTransition--;
     }
 
+    // Pulse effect on hovered node
+    pulsePhase = elapsed;
+    if (hoveredNode && highlightActive) {
+      const pulse = 0.3 + Math.sin(pulsePhase * 4) * 0.15;
+      hoveredNode.glowMat.opacity = pulse;
+      // Subtle scale pulse
+      const s = 1.0 + Math.sin(pulsePhase * 3) * 0.05;
+      hoveredNode.mesh.scale.set(s, s, s);
+    }
+
     // Particles
     updateParticles(elapsed);
 
-    // Raycasting (throttle to every 3 frames for perf)
+    // Raycasting (every 2 frames for smoother hover)
     frameCount++;
-    if (frameCount % 3 === 0) {
+    if (frameCount % 2 === 0) {
       doRaycast();
     }
 
