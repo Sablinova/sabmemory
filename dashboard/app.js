@@ -400,31 +400,69 @@
   function createTextSprite(text, color, fontSize) {
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
-    const sz = fontSize || 48;
+    // Render at 2x for sharpness
+    const dpr = 2;
+    const sz = (fontSize || 48) * dpr;
+    const pad = 24 * dpr;
     ctx.font = `bold ${sz}px Orbitron, sans-serif`;
     const metrics = ctx.measureText(text);
-    const w = Math.ceil(metrics.width) + 16;
-    const h = sz + 16;
+    const w = Math.ceil(metrics.width) + pad * 2;
+    const h = sz + pad * 2;
     canvas.width = w;
     canvas.height = h;
+
+    // Dark background pill for readability
+    ctx.fillStyle = 'rgba(3, 8, 16, 0.7)';
+    const rx = pad * 0.6, ry = pad * 0.6;
+    const rw = w - pad * 1.2, rh = h - pad * 1.2;
+    ctx.beginPath();
+    ctx.moveTo(rx + 6, ry);
+    ctx.lineTo(rx + rw - 6, ry);
+    ctx.quadraticCurveTo(rx + rw, ry, rx + rw, ry + 6);
+    ctx.lineTo(rx + rw, ry + rh - 6);
+    ctx.quadraticCurveTo(rx + rw, ry + rh, rx + rw - 6, ry + rh);
+    ctx.lineTo(rx + 6, ry + rh);
+    ctx.quadraticCurveTo(rx, ry + rh, rx, ry + rh - 6);
+    ctx.lineTo(rx, ry + 6);
+    ctx.quadraticCurveTo(rx, ry, rx + 6, ry);
+    ctx.fill();
+
+    // Text with strong glow
     ctx.font = `bold ${sz}px Orbitron, sans-serif`;
-    ctx.fillStyle = color || '#00d4ff';
-    ctx.shadowColor = color || '#00d4ff';
-    ctx.shadowBlur = 8;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
+
+    // Outer glow pass
+    ctx.shadowColor = color || '#00d4ff';
+    ctx.shadowBlur = 16 * dpr;
+    ctx.fillStyle = color || '#00d4ff';
     ctx.fillText(text, w / 2, h / 2);
+
+    // Dark stroke for contrast
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = 'rgba(3, 8, 16, 0.9)';
+    ctx.lineWidth = 3 * dpr;
+    ctx.strokeText(text, w / 2, h / 2);
+
+    // Crisp fill on top
+    ctx.fillStyle = color || '#00d4ff';
+    ctx.shadowColor = color || '#00d4ff';
+    ctx.shadowBlur = 4 * dpr;
+    ctx.fillText(text, w / 2, h / 2);
+
     const tex = new THREE.CanvasTexture(canvas);
     tex.minFilter = THREE.LinearFilter;
     const mat = new THREE.SpriteMaterial({
       map: tex,
       transparent: true,
-      opacity: 0.9,
+      opacity: 0.95,
       depthTest: false,
       sizeAttenuation: true,
     });
     const sprite = new THREE.Sprite(mat);
-    sprite.scale.set(w / 20, h / 20, 1);
+    // Scale: divide by dpr*10 so world size is reasonable
+    const scaleFactor = dpr * 10;
+    sprite.scale.set(w / scaleFactor, h / scaleFactor, 1);
     return sprite;
   }
 
@@ -470,7 +508,7 @@
     // ─── Scene Setup ───
     scene = new THREE.Scene();
     scene.background = new THREE.Color(0x030810);
-    scene.fog = new THREE.FogExp2(0x030810, 0.003);
+    scene.fog = new THREE.FogExp2(0x030810, 0.0015);
 
     camera = new THREE.PerspectiveCamera(60, width / height, 0.1, 2000);
     camera.position.set(0, 0, 120);
@@ -492,9 +530,9 @@
 
     const bloomPass = new THREE.UnrealBloomPass(
       new THREE.Vector2(width, height),
-      1.2,   // strength
+      0.8,   // strength
       0.4,   // radius
-      0.2    // threshold
+      0.5    // threshold
     );
     composer.addPass(bloomPass);
 
@@ -850,18 +888,18 @@
       if (n._isHub) {
         // Always-visible label for hubs
         const color = n.type === 'entity' ? '#aa55ff' : '#00ff88';
-        const label = createTextSprite(n.label, color, 36);
+        const label = createTextSprite(n.label, color, 46);
         const r = nodeRadius(n);
-        label.position.set(n.x, n.y + r + 3, n.z);
+        label.position.set(n.x, n.y + r + 5, n.z);
         scene.add(label);
         nm.label = label;
         nm.labelColor = color;
         edgeLabelSprites.push(label);
       } else {
         // Create hidden label for memory nodes (shown on hover)
-        const label = createTextSprite(truncate(n.label, 40), '#00d4ff', 28);
+        const label = createTextSprite(truncate(n.label, 40), '#00d4ff', 42);
         const r = nodeRadius(n);
-        label.position.set(n.x, n.y + r + 2, n.z);
+        label.position.set(n.x, n.y + r + 3.5, n.z);
         label.visible = false;
         scene.add(label);
         nm.label = label;
