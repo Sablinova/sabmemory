@@ -72,13 +72,15 @@ impl Database {
         self.get_memory_with_links(memory_id)
     }
 
+    /// Public entry point: acquires lock, delegates to conn-based helper.
     pub fn get_memory_with_links(&self, memory_id: i64) -> Result<MemoryWithLinks> {
-        self.get_memory_with_links_inner(memory_id)
+        let conn = self.conn.lock().unwrap();
+        self.get_memory_with_links_conn(&conn, memory_id)
     }
 
-    pub fn get_memory_with_links_inner(&self, memory_id: i64) -> Result<MemoryWithLinks> {
-        let conn = self.conn.lock().unwrap();
-
+    /// Inner helper that works with an already-held connection reference.
+    /// All callers that already hold the Mutex must use this to avoid deadlock.
+    fn get_memory_with_links_conn(&self, conn: &rusqlite::Connection, memory_id: i64) -> Result<MemoryWithLinks> {
         let memory = conn.query_row(
             "SELECT id, user_id, title, content, context, keywords, tags, importance,
              is_obsolete, obsolete_reason, superseded_by, obsoleted_at,
@@ -124,11 +126,11 @@ impl Database {
             },
         ).map_err(|_| anyhow::anyhow!("Memory not found: {}", memory_id))?;
 
-        let linked_ids = self.get_linked_ids_inner(&conn, memory_id)?;
-        let project_ids = self.get_assoc_ids_inner(&conn, "memory_project_association", "memory_id", "project_id", memory_id)?;
-        let entity_ids = self.get_assoc_ids_inner(&conn, "memory_entity_association", "memory_id", "entity_id", memory_id)?;
-        let document_ids = self.get_assoc_ids_inner(&conn, "memory_document_association", "memory_id", "document_id", memory_id)?;
-        let code_artifact_ids = self.get_assoc_ids_inner(&conn, "memory_code_artifact_association", "memory_id", "code_artifact_id", memory_id)?;
+        let linked_ids = self.get_linked_ids_inner(conn, memory_id)?;
+        let project_ids = self.get_assoc_ids_inner(conn, "memory_project_association", "memory_id", "project_id", memory_id)?;
+        let entity_ids = self.get_assoc_ids_inner(conn, "memory_entity_association", "memory_id", "entity_id", memory_id)?;
+        let document_ids = self.get_assoc_ids_inner(conn, "memory_document_association", "memory_id", "document_id", memory_id)?;
+        let code_artifact_ids = self.get_assoc_ids_inner(conn, "memory_code_artifact_association", "memory_id", "code_artifact_id", memory_id)?;
 
         Ok(MemoryWithLinks {
             memory,
@@ -167,41 +169,6 @@ impl Database {
         // Build FTS5 query from natural language
         let fts_query = build_fts_query(&p.query, p.query_context.as_deref());
 
-        // Run FTS5 search with BM25 ranking
-        let sql = format!(
-            "SELECT m.id, m.user_id, m.title, m.content, m.context, m.keywords, m.tags,
-             m.importance, m.is_obsolete, m.obsolete_reason, m.superseded_by, m.obsoleted_at,
-             m.source_repo, m.source_files, m.source_url, m.confidence, m.encoding_agent, m.encoding_version,
-             m.version, m.parent_memory_id, m.is_latest, m.relationship_type,
-             m.forget_after, m.is_forgotten, m.forgotten_at, m.memory_type, m.container_tag,
-             m.created_at, m.updated_at,
-             bm25(memories_fts, 5.0, 3.0, 2.0, 1.0, 1.0) as rank
-             FROM memories_fts fts
-             JOIN memories m ON m.id = fts.rowid
-             WHERE memories_fts MATCH ?1
-             AND m.is_obsolete = 0 AND m.is_forgotten = 0
-             {}{}{}
-             ORDER BY (rank * (m.importance / 10.0)) ASC
-             LIMIT ?2",
-            if !p.project_ids.is_empty() {
-                " AND m.id IN (SELECT memory_id FROM memory_project_association WHERE project_id IN (SELECT value FROM json_each(?3)))"
-            } else { "" },
-            if !p.tags.is_empty() {
-                " AND EXISTS (SELECT 1 FROM json_each(m.tags) t, json_each(?4) f WHERE t.value = f.value)"
-            } else { "" },
-            if p.container_tag.is_some() {
-                " AND m.container_tag = ?5"
-            } else { "" },
-        );
-
-        let stmt = conn.prepare(&sql)?;
-        let _param_idx = 1;
-        let _fts_q_clone = fts_query.clone();
-
-        // We need a simpler approach to handle variable params
-        // Let's use a direct query approach
-        drop(stmt);
-
         let memories = self.search_memories_inner(&conn, &fts_query, p)?;
 
         let mut primary_memories = Vec::new();
@@ -218,7 +185,7 @@ impl Database {
             primary_memories.push(mem);
         }
 
-        // Collect linked memories
+        // Collect linked memories (using conn-based helper to avoid deadlock)
         let mut linked_memories = Vec::new();
         if p.include_links {
             let mut seen_ids: std::collections::HashSet<i64> = primary_memories.iter().map(|m| m.memory.id).collect();
@@ -228,7 +195,7 @@ impl Database {
                     if link_count >= p.max_links_per_primary { break; }
                     if seen_ids.contains(linked_id) { continue; }
 
-                    if let Ok(linked_mem) = self.get_memory_with_links_inner(*linked_id) {
+                    if let Ok(linked_mem) = self.get_memory_with_links_conn(&conn, *linked_id) {
                         if linked_mem.memory.is_obsolete || linked_mem.memory.is_forgotten { continue; }
                         let mem_tokens = estimate_tokens(&format!("{} {} {}",
                             linked_mem.memory.title, linked_mem.memory.content, linked_mem.memory.context));
@@ -409,9 +376,8 @@ impl Database {
         let params_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
         conn.execute(&sql, params_refs.as_slice())?;
 
-        drop(conn);
-        self.log_activity("memory", p.memory_id, "update", None)?;
-        self.get_memory_with_links_inner(p.memory_id)
+        self.log_activity_inner(&conn, "memory", p.memory_id, "update", None)?;
+        self.get_memory_with_links_conn(&conn, p.memory_id)
     }
 
     pub fn delete_memory(&self, memory_id: i64) -> Result<()> {
@@ -456,9 +422,8 @@ impl Database {
             "UPDATE memories SET is_obsolete = 1, obsolete_reason = ?1, superseded_by = ?2, obsoleted_at = ?3, updated_at = ?3 WHERE id = ?4",
             params![reason, superseded_by, now, memory_id],
         )?;
-        drop(conn);
-        self.log_activity("memory", memory_id, "mark_obsolete", None)?;
-        self.get_memory_with_links_inner(memory_id)
+        self.log_activity_inner(&conn, "memory", memory_id, "mark_obsolete", None)?;
+        self.get_memory_with_links_conn(&conn, memory_id)
     }
 
     pub fn get_recent_memories(&self, limit: i32, project_ids: &[i64], container_tag: Option<&str>) -> Result<Vec<MemoryWithLinks>> {
@@ -482,11 +447,10 @@ impl Database {
                 .collect()
         };
         drop(stmt);
-        drop(conn);
 
         let mut results = Vec::new();
         for id in ids {
-            if let Ok(mem) = self.get_memory_with_links_inner(id) {
+            if let Ok(mem) = self.get_memory_with_links_conn(&conn, id) {
                 // Filter by project if needed
                 if !project_ids.is_empty() {
                     if !project_ids.iter().any(|pid| mem.project_ids.contains(pid)) {
@@ -544,9 +508,8 @@ impl Database {
             params![new_id, p.parent_memory_id],
         )?;
 
-        drop(conn);
-        self.log_activity("memory", new_id, "create_version", None)?;
-        self.get_memory_with_links_inner(new_id)
+        self.log_activity_inner(&conn, "memory", new_id, "create_version", None)?;
+        self.get_memory_with_links_conn(&conn, new_id)
     }
 
     pub fn get_version_chain(&self, memory_id: i64) -> Result<Vec<MemoryWithLinks>> {
@@ -579,11 +542,10 @@ impl Database {
             .filter_map(|r| r.ok())
             .collect();
         drop(stmt);
-        drop(conn);
 
         let mut chain = Vec::new();
         for id in ids {
-            if let Ok(mem) = self.get_memory_with_links_inner(id) {
+            if let Ok(mem) = self.get_memory_with_links_conn(&conn, id) {
                 chain.push(mem);
             }
         }
@@ -597,18 +559,18 @@ impl Database {
             "UPDATE memories SET is_forgotten = 1, forgotten_at = ?1, obsolete_reason = ?2, updated_at = ?1 WHERE id = ?3",
             params![now, reason, memory_id],
         )?;
-        drop(conn);
-        self.log_activity("memory", memory_id, "forget", None)?;
-        self.get_memory_with_links_inner(memory_id)
+        self.log_activity_inner(&conn, "memory", memory_id, "forget", None)?;
+        self.get_memory_with_links_conn(&conn, memory_id)
     }
 
     pub fn search_similar(&self, memory_id: i64, k: i32) -> Result<Vec<MemoryWithLinks>> {
+        let conn = self.conn.lock().unwrap();
+
         // Get the memory's text for FTS search
-        let mem = self.get_memory_with_links_inner(memory_id)?;
+        let mem = self.get_memory_with_links_conn(&conn, memory_id)?;
         let search_text = format!("{} {} {}", mem.memory.title, mem.memory.content, mem.memory.keywords.join(" "));
         let fts_query = build_fts_query(&search_text, None);
 
-        let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT m.id FROM memories_fts fts
              JOIN memories m ON m.id = fts.rowid
@@ -622,11 +584,10 @@ impl Database {
             .filter_map(|r| r.ok())
             .collect();
         drop(stmt);
-        drop(conn);
 
         let mut results = Vec::new();
         for id in ids {
-            if let Ok(mem) = self.get_memory_with_links_inner(id) {
+            if let Ok(mem) = self.get_memory_with_links_conn(&conn, id) {
                 results.push(mem);
             }
         }

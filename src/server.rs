@@ -64,7 +64,7 @@ impl SabMemoryServer {
     /// document IDs, and code artifact IDs.
     #[tool(name = "get_memory")]
     async fn get_memory(&self, Parameters(p): Parameters<GetMemoryParams>) -> Result<CallToolResult, McpError> {
-        match self.db.get_memory_with_links_inner(p.memory_id) {
+        match self.db.get_memory_with_links(p.memory_id) {
             Ok(mem) => ok_json(&mem),
             Err(e) => tool_error(&format!("Memory not found: {}", e)),
         }
