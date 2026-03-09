@@ -1,6 +1,7 @@
 mod db;
 mod server;
 mod types;
+mod dashboard;
 
 use std::path::PathBuf;
 use clap::{Parser, Subcommand};
@@ -16,6 +17,15 @@ struct Cli {
 enum Commands {
     /// Start the MCP server over stdio
     Serve,
+    /// Start the web dashboard
+    Dashboard {
+        /// Port to listen on
+        #[arg(long, default_value = "3080")]
+        port: u16,
+        /// Host to bind to
+        #[arg(long, default_value = "0.0.0.0")]
+        host: String,
+    },
     /// Migrate data from a forgetful-ai database
     Migrate {
         /// Path to the forgetful-ai SQLite database
@@ -48,6 +58,9 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Some(Commands::Migrate { from }) => {
             migrate::run_migration(&from, &data_path())?;
+        }
+        Some(Commands::Dashboard { port, host }) => {
+            dashboard::run_dashboard(&data_path(), &host, port).await?;
         }
         Some(Commands::Serve) | None => {
             run_server().await?;

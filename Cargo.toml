@@ -3,7 +3,7 @@ name = "sabmemory"
 version = "0.1.0"
 edition = "2021"
 authors = ["Sablinova"]
-description = "Lightweight Rust MCP memory server. Near-zero RAM alternative to forgetful-ai."
+description = "Lightweight Rust MCP memory server. ~6 MB RAM vs ~500-850 MB for embedding-based alternatives."
 repository = "https://github.com/Sablinova/sabmemory"
 license = "MIT"
 
@@ -21,6 +21,8 @@ anyhow = "1"
 uuid = { version = "1", features = ["v4"] }
 dirs = "6"
 clap = { version = "4", features = ["derive"] }
+axum = "0.8"
+tower-http = { version = "0.6", features = ["cors"] }
 
 [profile.release]
 opt-level = "s"

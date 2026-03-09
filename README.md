@@ -2,7 +2,71 @@
 
 Lightweight Rust MCP memory server. Near-zero RAM alternative to embedding-based memory systems.
 
-**~3-10 MB RAM** vs ~845 MB for ONNX embedding models. Single static binary, no Python, no ML runtime.
+**~6 MB RAM** in production. Single 4.1 MB static binary. No Python, no Node.js, no ML runtime, no external dependencies. Built-in web dashboard with knowledge graph visualization.
+
+## Why sabmemory?
+
+Every other MCP memory server requires a heavy runtime (Python/Node.js), ML models for embeddings, or cloud API calls. sabmemory uses SQLite FTS5 full-text search instead of vector embeddings -- achieving fast, relevant search at a fraction of the resource cost.
+
+### Comparison with other MCP memory servers
+
+#### Overview
+
+| Server | Language | Stars | License | Search Method | RAM Usage | Install Size |
+|--------|----------|-------|---------|---------------|-----------|-------------|
+| **sabmemory** | **Rust** | -- | MIT | FTS5 + BM25 | **~6 MB** | **4.1 MB binary** |
+| [mcp-memory-service](https://github.com/doobidoo/mcp-memory-service) | Python | 1.5k | Apache 2.0 | BM25 + ONNX vector hybrid | ~500-850 MB | ~400 MB (models + deps) |
+| [Forgetful](https://github.com/ScottRBK/forgetful) | Python | 190 | MIT | FastEmbed + cross-encoder rerank | ~300-500 MB | ~200 MB (models + deps) |
+| [mem0](https://github.com/mem0ai/mem0) | Python/TS | 49.1k | Apache 2.0 | LLM-powered extraction + vector | ~300-500 MB | pip install + LLM API |
+| [Basic Memory](https://github.com/basicmachines-co/basic-memory) | Python | 2.6k | MIT | FastEmbed vector search | ~200-400 MB | pip install (~200 MB) |
+| [@mcp/memory](https://github.com/modelcontextprotocol/servers) | TypeScript | -- | MIT | Entity graph traversal | ~50-80 MB | npm install |
+| [supermemory](https://github.com/supermemoryai/supermemory) | TypeScript | 16.8k | MIT | Hybrid RAG (cloud) | Cloud-hosted | SaaS |
+
+#### Features
+
+| Feature | sabmemory | mcp-memory-service | Forgetful | mem0 | Basic Memory | @mcp/memory | supermemory |
+|---------|-----------|-------------------|-----------|------|--------------|-------------|-------------|
+| MCP Tools | **49** | 15+ (REST + MCP) | 42 (3 meta) | ~10 | ~10 | 4 | Cloud API |
+| Knowledge Graph | Yes | Yes (typed edges) | Yes | No | No | Yes (triples) | No |
+| Entity System | Yes (typed, AKA) | No | Yes | No | No | Yes (simple) | No |
+| Memory Versioning | Yes (chains) | No | No | No | No | No | Yes |
+| Auto-Linking | Yes (FTS5) | No | Yes (vector) | No | No | No | No |
+| Auto-Forget/Expiry | Yes | Yes (decay) | No | No | No | No | Yes |
+| Token Budget | Yes | No | Yes | No | No | No | No |
+| Projects | Yes | No | Yes | No | No | No | No |
+| Documents | Yes | No | Yes | No | Yes (Markdown) | No | No |
+| Code Artifacts | Yes | No | Yes | No | No | No | No |
+| User Profiles | Yes (auto-gen) | No | No | Yes | No | No | No |
+| Web Dashboard | Yes (built-in) | Yes | No | Yes (OpenMemory) | No | No | Yes (SaaS) |
+| Multi-User | Single (local) | Yes (auth) | Yes (multi-tenant) | Yes | Single | Single | Yes (SaaS) |
+| Container Scoping | Yes | No | No | No | No | No | No |
+
+#### Runtime and Dependencies
+
+| Aspect | sabmemory | mcp-memory-service | Forgetful | mem0 | Basic Memory | @mcp/memory | supermemory |
+|--------|-----------|-------------------|-----------|------|--------------|-------------|-------------|
+| Runtime | None (static binary) | Python 3.10+ | Python 3.12+ | Python 3.8+ | Python 3.11+ | Node.js 18+ | Cloud |
+| External Services | None | None (ONNX local) | None (FastEmbed local) | OpenAI API key | None | None | Cloud API |
+| ML Models Needed | **No** | Yes (MiniLM-L6-v2) | Yes (bge-small-en) | Yes (via LLM API) | Yes (FastEmbed) | No | Yes (cloud) |
+| Storage Backend | SQLite (bundled) | SQLite-vec | SQLite or PostgreSQL | Qdrant/ChromaDB/custom | SQLite + Markdown | JSONL file | Cloud |
+| Docker Support | Not needed | Yes | Yes | Yes | No | No | N/A |
+| Install Command | `cargo build` | `pip install` | `uvx forgetful-ai` | `pip install mem0ai` | `pip install basic-memory` | `npx` | Sign up |
+| Config Required | Zero-config | `.env` recommended | Zero-config | LLM API key required | Zero-config | Zero-config | Account required |
+| Offline Operation | **Yes** | Yes | Yes | **No** (needs LLM API) | Yes | Yes | **No** |
+| Self-Hosted | Yes | Yes | Yes | Yes | Yes | Yes | No (SaaS) |
+
+#### Search Quality Tradeoffs
+
+sabmemory trades semantic similarity for resource efficiency. FTS5 + BM25 performs keyword-aware ranked search rather than meaning-aware vector search. In practice, this works well for the MCP memory use case because:
+
+1. Memories are short, atomic notes with explicit keywords and tags
+2. The agent writing the memory is the same agent searching for it -- it uses consistent terminology
+3. Importance score boosting surfaces the most relevant results regardless of lexical match
+4. Auto-linking via FTS5 similarity captures related concepts at write time
+
+For use cases requiring true semantic search (finding "automobile" when searching "car"), an embedding-based server like mcp-memory-service or Forgetful is more appropriate.
+
+**Measured on a 2 GB VPS (Ubuntu 24.04).** sabmemory RSS: 6.5 MB Pss under active use with 16 memories, 2 entities, 2 projects, and 1 document. Idle instances drop to ~2 MB.
 
 ## Features
 
@@ -186,6 +250,83 @@ Set `forget_after` (ISO 8601 date) on a memory. Expired memories are automatical
 |------|-------------|
 | `list_tools` | List all tools by category |
 | `tool_info` | Detailed tool info + schema |
+
+## Web Dashboard
+
+sabmemory includes a built-in web dashboard for visualizing your knowledge graph, browsing memories, and exploring entities/projects/documents.
+
+### Running the dashboard
+
+```bash
+sabmemory dashboard --port 3080
+```
+
+The dashboard is served at `http://localhost:3080` and provides:
+
+- **Knowledge graph** -- interactive d3-force visualization of all memories, entities, and their connections
+- **Memory browser** -- searchable list of all memories with importance, tags, and metadata
+- **Entity explorer** -- view entities, their types, aliases, and relationships
+- **Project view** -- projects with associated memory counts
+- **Document view** -- stored long-form documents
+- **Search** -- full-text search across all memories
+- **Detail modal** -- click any memory to see full content, links, and associations
+
+### Dashboard API
+
+The dashboard exposes a REST API at `/api/`:
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/stats` | Memory, entity, project, document, and link counts |
+| `GET /api/memories` | All memories with metadata |
+| `GET /api/memory/{id}` | Single memory with links and associations |
+| `GET /api/entities` | All entities |
+| `GET /api/relationships` | Entity relationships with resolved names |
+| `GET /api/projects` | Projects with memory counts |
+| `GET /api/documents` | All documents |
+| `GET /api/graph` | Full knowledge graph (nodes + edges) for visualization |
+| `GET /api/search?q=...` | FTS5 search |
+
+### Running as a systemd service
+
+```bash
+# Create user service
+mkdir -p ~/.config/systemd/user
+cat > ~/.config/systemd/user/sabmemory-dashboard.service << 'EOF'
+[Unit]
+Description=sabmemory web dashboard
+After=network.target
+
+[Service]
+ExecStart=%h/.local/bin/sabmemory dashboard --port 3080
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+EOF
+
+# Enable and start
+systemctl --user daemon-reload
+systemctl --user enable --now sabmemory-dashboard
+```
+
+### Reverse proxy (nginx)
+
+To serve the dashboard behind a reverse proxy with HTTPS:
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name memory.yourdomain.com;
+
+    location / {
+        proxy_pass http://127.0.0.1:3080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+}
+```
 
 ## Credits
 

@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>sabmemory</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+</head>
+<body>
+  <header>
+    <div class="header-left">
+      <h1>sabmemory</h1>
+      <span class="header-sub">knowledge graph</span>
+    </div>
+    <nav>
+      <button class="nav-btn active" data-view="graph">Graph</button>
+      <button class="nav-btn" data-view="memories">Memories</button>
+      <button class="nav-btn" data-view="entities">Entities</button>
+      <button class="nav-btn" data-view="projects">Projects</button>
+      <button class="nav-btn" data-view="documents">Documents</button>
+      <button class="nav-btn" data-view="search">Search</button>
+    </nav>
+  </header>
+
+  <div id="stats-bar"></div>
+
+  <main>
+    <!-- Graph View -->
+    <div id="view-graph" class="view active">
+      <div class="graph-controls">
+        <label><input type="checkbox" id="show-obsolete"> Show obsolete</label>
+        <label><input type="checkbox" id="show-forgotten"> Show forgotten</label>
+        <label>Min importance: <input type="range" id="min-importance" min="1" max="10" value="1"><span id="min-imp-val">1</span></label>
+        <button id="graph-reset">Reset Zoom</button>
+      </div>
+      <div id="graph-container">
+        <svg id="graph-svg"></svg>
+      </div>
+      <div id="graph-tooltip" class="tooltip"></div>
+    </div>
+
+    <!-- Memories View -->
+    <div id="view-memories" class="view">
+      <div class="list-header">
+        <h2>Memories</h2>
+        <div class="filters">
+          <select id="mem-filter-type">
+            <option value="">All Types</option>
+            <option value="fact">Facts</option>
+            <option value="preference">Preferences</option>
+            <option value="episode">Episodes</option>
+          </select>
+          <select id="mem-filter-status">
+            <option value="active">Active</option>
+            <option value="obsolete">Obsolete</option>
+            <option value="forgotten">Forgotten</option>
+            <option value="all">All</option>
+          </select>
+        </div>
+      </div>
+      <div id="memories-list" class="card-list"></div>
+    </div>
+
+    <!-- Memory Detail Modal -->
+    <div id="memory-modal" class="modal" hidden>
+      <div class="modal-content">
+        <button class="modal-close">&times;</button>
+        <div id="memory-detail"></div>
+      </div>
+    </div>
+
+    <!-- Entities View -->
+    <div id="view-entities" class="view">
+      <h2>Entities</h2>
+      <div id="entities-list" class="card-list"></div>
+    </div>
+
+    <!-- Projects View -->
+    <div id="view-projects" class="view">
+      <h2>Projects</h2>
+      <div id="projects-list" class="card-list"></div>
+    </div>
+
+    <!-- Documents View -->
+    <div id="view-documents" class="view">
+      <h2>Documents</h2>
+      <div id="documents-list" class="card-list"></div>
+    </div>
+
+    <!-- Search View -->
+    <div id="view-search" class="view">
+      <div class="search-box">
+        <input type="text" id="search-input" placeholder="Search memories..." autocomplete="off">
+        <button id="search-btn">Search</button>
+      </div>
+      <div id="search-results" class="card-list"></div>
+    </div>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>
