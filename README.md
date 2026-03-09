@@ -16,15 +16,17 @@ Every other MCP memory server requires a heavy runtime (Python/Node.js), ML mode
 |--------|----------|-------|---------|---------------|-----------|-------------|
 | **sabmemory** | **Rust** | -- | MIT | FTS5 + BM25 | **~6 MB** | **4.1 MB binary** |
 | [mcp-memory-service](https://github.com/doobidoo/mcp-memory-service) | Python | 1.5k | Apache 2.0 | BM25 + ONNX vector hybrid | ~500-850 MB | ~400 MB (models + deps) |
-| [Forgetful](https://github.com/ScottRBK/forgetful) | Python | 190 | MIT | FastEmbed + cross-encoder rerank | ~300-500 MB | ~200 MB (models + deps) |
+| [forgetful](https://github.com/ScottRBK/forgetful) | Python | 190 | MIT | FastEmbed + cross-encoder rerank | ~300-500 MB | ~200 MB (models + deps) |
 | [mem0](https://github.com/mem0ai/mem0) | Python/TS | 49.1k | Apache 2.0 | LLM-powered extraction + vector | ~300-500 MB | pip install + LLM API |
 | [Basic Memory](https://github.com/basicmachines-co/basic-memory) | Python | 2.6k | MIT | FastEmbed vector search | ~200-400 MB | pip install (~200 MB) |
-| [@mcp/memory](https://github.com/modelcontextprotocol/servers) | TypeScript | -- | MIT | Entity graph traversal | ~50-80 MB | npm install |
+| [@modelcontextprotocol/server-memory](https://github.com/modelcontextprotocol/servers/tree/main/src/memory) | TypeScript | 80.5k\* | MIT | Entity graph traversal | ~50-80 MB | npm install |
 | [supermemory](https://github.com/supermemoryai/supermemory) | TypeScript | 16.8k | MIT | Hybrid RAG (cloud) | Cloud-hosted | SaaS |
+
+\*Stars shown for the modelcontextprotocol/servers monorepo, not the memory package specifically.
 
 #### Features
 
-| Feature | sabmemory | mcp-memory-service | Forgetful | mem0 | Basic Memory | @mcp/memory | supermemory |
+| Feature | sabmemory | mcp-memory-service | forgetful | mem0 | Basic Memory | @mcp/memory | supermemory |
 |---------|-----------|-------------------|-----------|------|--------------|-------------|-------------|
 | MCP Tools | **49** | 15+ (REST + MCP) | 42 (3 meta) | ~10 | ~10 | 4 | Cloud API |
 | Knowledge Graph | Yes | Yes (typed edges) | Yes | No | No | Yes (triples) | No |
@@ -37,13 +39,13 @@ Every other MCP memory server requires a heavy runtime (Python/Node.js), ML mode
 | Documents | Yes | No | Yes | No | Yes (Markdown) | No | No |
 | Code Artifacts | Yes | No | Yes | No | No | No | No |
 | User Profiles | Yes (auto-gen) | No | No | Yes | No | No | No |
-| Web Dashboard | Yes (built-in) | Yes | No | Yes (OpenMemory) | No | No | Yes (SaaS) |
+| Web Dashboard | Yes (3D WebGL) | Yes | No | Yes (OpenMemory) | No | No | Yes (SaaS) |
 | Multi-User | Single (local) | Yes (auth) | Yes (multi-tenant) | Yes | Single | Single | Yes (SaaS) |
 | Container Scoping | Yes | No | No | No | No | No | No |
 
 #### Runtime and Dependencies
 
-| Aspect | sabmemory | mcp-memory-service | Forgetful | mem0 | Basic Memory | @mcp/memory | supermemory |
+| Aspect | sabmemory | mcp-memory-service | forgetful | mem0 | Basic Memory | @mcp/memory | supermemory |
 |--------|-----------|-------------------|-----------|------|--------------|-------------|-------------|
 | Runtime | None (static binary) | Python 3.10+ | Python 3.12+ | Python 3.8+ | Python 3.11+ | Node.js 18+ | Cloud |
 | External Services | None | None (ONNX local) | None (FastEmbed local) | OpenAI API key | None | None | Cloud API |
@@ -66,7 +68,7 @@ sabmemory trades semantic similarity for resource efficiency. FTS5 + BM25 perfor
 
 For use cases requiring true semantic search (finding "automobile" when searching "car"), an embedding-based server like mcp-memory-service or Forgetful is more appropriate.
 
-**Measured on a 2 GB VPS (Ubuntu 24.04).** sabmemory RSS: 6.5 MB Pss under active use with 16 memories, 2 entities, 2 projects, and 1 document. Idle instances drop to ~2 MB.
+**Measured on a 2 GB VPS (Ubuntu 24.04).** sabmemory RSS: 6.5 MB Pss under active use with 19 memories, 2 entities, 2 projects, and 1 document. Idle instances drop to ~2 MB.
 
 ## Features
 
@@ -263,7 +265,7 @@ sabmemory dashboard --port 3080
 
 The dashboard is served at `http://localhost:3080` and provides:
 
-- **Knowledge graph** -- interactive d3-force visualization of all memories, entities, and their connections
+- **Knowledge graph** -- interactive Three.js WebGL 3D visualization of all memories, entities, and their connections
 - **Memory browser** -- searchable list of all memories with importance, tags, and metadata
 - **Entity explorer** -- view entities, their types, aliases, and relationships
 - **Project view** -- projects with associated memory counts
