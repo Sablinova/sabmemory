@@ -28,15 +28,19 @@
   let simAlpha = 1.0;         // simulation cooling
 
   // ─── Constants ───
-  const SIM_ITERATIONS = 1;
-  const REPULSION = 800;
-  const SPRING_K = 0.008;
-  const SPRING_LENGTH = 30;
-  const DAMPING = 0.88;
-  const CENTER_GRAVITY = 0.002;
-  const ALPHA_DECAY = 0.998;
+  const REPULSION = 600;
+  const STRUCTURAL_SPRING_K = 0.03;
+  const STRUCTURAL_SPRING_LENGTH = 20;
+  const MEMORY_LINK_SPRING_K = 0.001;    // very weak — decorative
+  const MEMORY_LINK_SPRING_LENGTH = 50;
+  const DAMPING = 0.85;
+  const CENTER_GRAVITY = 0.001;
+  const HUB_GRAVITY = 0.0005;            // hubs pulled gently to origin
+  const ALPHA_DECAY = 0.997;
   const ALPHA_MIN = 0.001;
   const PARTICLE_COUNT = 600;
+  const HUB_SPREAD = 60;                 // how far apart hubs are placed
+  const CHILD_SPREAD = 18;               // radius for children around hub
 
   // ─── Init ───
   document.addEventListener('DOMContentLoaded', async () => {
@@ -364,8 +368,8 @@
   }
 
   function nodeRadius(d) {
-    if (d.type === 'entity') return 2.0;
-    if (d.type === 'project') return 2.5;
+    if (d.type === 'entity') return 3.5;
+    if (d.type === 'project') return 4.0;
     return 0.8 + (d.importance || 5) * 0.15;
   }
 
@@ -520,24 +524,108 @@
 
     const nodeIdSet = new Set(graphNodes.map(n => n.id));
 
-    // Filter edges
-    graphEdges = graphData.edges.filter(e =>
+    // Filter edges — separate structural from memory_links
+    const allEdges = graphData.edges.filter(e =>
       nodeIdSet.has(e.source) && nodeIdSet.has(e.target)
     ).map(e => ({ ...e }));
+
+    // Classify edges
+    const structuralEdges = [];  // entity_assoc, project_assoc, relationship, entity_project
+    const memoryLinkEdges = [];  // memory_link (decorative)
+    allEdges.forEach(e => {
+      if (e.type === 'memory_link') {
+        memoryLinkEdges.push(e);
+      } else {
+        structuralEdges.push(e);
+      }
+    });
+    graphEdges = allEdges;
 
     // Build ID -> index map
     const idToIdx = {};
     graphNodes.forEach((n, i) => { idToIdx[n.id] = i; });
 
-    // ─── Initialize positions (sphere distribution) ───
-    const spread = Math.max(30, graphNodes.length * 1.5);
-    graphNodes.forEach((n, i) => {
-      const phi = Math.acos(1 - 2 * (i + 0.5) / graphNodes.length);
+    // ─── Hierarchical Initial Positioning ───
+    // Identify hubs (entities + projects) and their children
+    const hubs = graphNodes.filter(n => n.type === 'entity' || n.type === 'project');
+    const memoryNodes = graphNodes.filter(n => n.type === 'memory');
+
+    // Map each memory to its parent hub(s) via structural edges
+    const memoryToHub = {};  // memoryId -> first hub id
+    const hubChildren = {};  // hubId -> [memoryIds]
+    hubs.forEach(h => { hubChildren[h.id] = []; });
+
+    structuralEdges.forEach(e => {
+      const sNode = graphNodes[idToIdx[e.source]];
+      const tNode = graphNodes[idToIdx[e.target]];
+      if (!sNode || !tNode) return;
+
+      if ((sNode.type === 'entity' || sNode.type === 'project') && tNode.type === 'memory') {
+        if (!memoryToHub[tNode.id]) {
+          memoryToHub[tNode.id] = sNode.id;
+          hubChildren[sNode.id].push(tNode.id);
+        }
+      } else if ((tNode.type === 'entity' || tNode.type === 'project') && sNode.type === 'memory') {
+        if (!memoryToHub[sNode.id]) {
+          memoryToHub[sNode.id] = tNode.id;
+          hubChildren[tNode.id].push(sNode.id);
+        }
+      }
+    });
+
+    // Orphan memories (no hub parent)
+    const orphans = memoryNodes.filter(m => !memoryToHub[m.id]);
+
+    // Position hubs evenly spaced in 3D
+    const hubAngleStep = (2 * Math.PI) / Math.max(hubs.length, 1);
+    hubs.forEach((h, i) => {
+      const angle = hubAngleStep * i;
+      const yOff = (i % 2 === 0 ? 1 : -1) * 10;
+      h.x = Math.cos(angle) * HUB_SPREAD;
+      h.y = yOff;
+      h.z = Math.sin(angle) * HUB_SPREAD;
+      h.vx = 0; h.vy = 0; h.vz = 0;
+      h._isHub = true;
+      h._hubAnchorX = h.x;
+      h._hubAnchorY = h.y;
+      h._hubAnchorZ = h.z;
+    });
+
+    // Position children around their hub in a 3D sphere
+    hubs.forEach(h => {
+      const children = hubChildren[h.id];
+      const count = children.length;
+      children.forEach((cid, ci) => {
+        const cn = graphNodes[idToIdx[cid]];
+        if (!cn) return;
+        // Fibonacci sphere distribution around hub
+        const phi = Math.acos(1 - 2 * (ci + 0.5) / Math.max(count, 1));
+        const theta = Math.PI * (1 + Math.sqrt(5)) * ci;
+        const r = CHILD_SPREAD * (0.6 + Math.random() * 0.4);
+        cn.x = h.x + r * Math.sin(phi) * Math.cos(theta);
+        cn.y = h.y + r * Math.sin(phi) * Math.sin(theta);
+        cn.z = h.z + r * Math.cos(phi);
+        cn.vx = 0; cn.vy = 0; cn.vz = 0;
+        cn._parentHub = h.id;
+      });
+    });
+
+    // Position orphans in a cluster near the center
+    orphans.forEach((o, i) => {
+      const phi = Math.acos(1 - 2 * (i + 0.5) / Math.max(orphans.length, 1));
       const theta = Math.PI * (1 + Math.sqrt(5)) * i;
-      n.x = spread * Math.sin(phi) * Math.cos(theta) * (0.5 + Math.random() * 0.5);
-      n.y = spread * Math.sin(phi) * Math.sin(theta) * (0.5 + Math.random() * 0.5);
-      n.z = spread * Math.cos(phi) * (0.5 + Math.random() * 0.5);
-      n.vx = 0; n.vy = 0; n.vz = 0;
+      const r = CHILD_SPREAD * 0.8;
+      o.x = r * Math.sin(phi) * Math.cos(theta);
+      o.y = r * Math.sin(phi) * Math.sin(theta);
+      o.z = r * Math.cos(phi);
+      o.vx = 0; o.vy = 0; o.vz = 0;
+    });
+
+    // Tag edges with their type category and store index refs
+    allEdges.forEach(e => {
+      e._si = idToIdx[e.source];
+      e._ti = idToIdx[e.target];
+      e._isStructural = (e.type !== 'memory_link');
     });
 
     // ─── Create Node Meshes ───
@@ -562,7 +650,7 @@
       const glowMat = new THREE.MeshBasicMaterial({
         color: color,
         transparent: true,
-        opacity: 0.08,
+        opacity: n._isHub ? 0.15 : 0.08,
         side: THREE.BackSide,
       });
       const glowMesh = new THREE.Mesh(glowGeo, glowMat);
@@ -571,50 +659,80 @@
       nodeMeshes.push({ mesh, data: n, glowMesh, glowMat });
     });
 
-    // ─── Create Edges ───
+    // ─── Create Edges — two layers ───
+    // Clean up old
     if (edgeLines) scene.remove(edgeLines);
+    if (window._memLinkLines) scene.remove(window._memLinkLines);
+    edgeLines = null;
+    window._memLinkLines = null;
 
-    if (graphEdges.length > 0) {
-      const positions = new Float32Array(graphEdges.length * 6);
-      const colors = new Float32Array(graphEdges.length * 6);
+    // Structural edges (prominent)
+    if (structuralEdges.length > 0) {
+      const positions = new Float32Array(structuralEdges.length * 6);
+      const colors = new Float32Array(structuralEdges.length * 6);
 
-      graphEdges.forEach((e, i) => {
-        const si = idToIdx[e.source];
-        const ti = idToIdx[e.target];
-        if (si === undefined || ti === undefined) return;
-        const s = graphNodes[si];
-        const t = graphNodes[ti];
+      structuralEdges.forEach((e, i) => {
+        if (e._si === undefined || e._ti === undefined) return;
+        const s = graphNodes[e._si];
+        const t = graphNodes[e._ti];
         const off = i * 6;
-        positions[off]     = s.x; positions[off + 1] = s.y; positions[off + 2] = s.z;
-        positions[off + 3] = t.x; positions[off + 4] = t.y; positions[off + 5] = t.z;
-
+        positions[off]     = s.x; positions[off+1] = s.y; positions[off+2] = s.z;
+        positions[off + 3] = t.x; positions[off+4] = t.y; positions[off+5] = t.z;
         const c = new THREE.Color(edgeColor(e));
-        colors[off]     = c.r; colors[off + 1] = c.g; colors[off + 2] = c.b;
-        colors[off + 3] = c.r; colors[off + 4] = c.g; colors[off + 5] = c.b;
-
-        // Store indices for fast updates
-        e._si = si;
-        e._ti = ti;
+        colors[off]     = c.r; colors[off+1] = c.g; colors[off+2] = c.b;
+        colors[off + 3] = c.r; colors[off+4] = c.g; colors[off+5] = c.b;
+        e._drawIdx = i;
       });
 
       const lineGeo = new THREE.BufferGeometry();
       lineGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
       lineGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-
       const lineMat = new THREE.LineBasicMaterial({
         vertexColors: true,
         transparent: true,
-        opacity: 0.3,
-        linewidth: 1,
+        opacity: 0.6,
       });
-
       edgeLines = new THREE.LineSegments(lineGeo, lineMat);
       scene.add(edgeLines);
     }
 
+    // Memory link edges (faint, decorative)
+    if (memoryLinkEdges.length > 0) {
+      const positions = new Float32Array(memoryLinkEdges.length * 6);
+      const colors = new Float32Array(memoryLinkEdges.length * 6);
+
+      memoryLinkEdges.forEach((e, i) => {
+        if (e._si === undefined || e._ti === undefined) return;
+        const s = graphNodes[e._si];
+        const t = graphNodes[e._ti];
+        const off = i * 6;
+        positions[off]     = s.x; positions[off+1] = s.y; positions[off+2] = s.z;
+        positions[off + 3] = t.x; positions[off+4] = t.y; positions[off+5] = t.z;
+        // Dim cyan for memory links
+        colors[off]     = 0; colors[off+1] = 0.3; colors[off+2] = 0.5;
+        colors[off + 3] = 0; colors[off+4] = 0.3; colors[off+5] = 0.5;
+        e._drawIdx = i;
+      });
+
+      const lineGeo = new THREE.BufferGeometry();
+      lineGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      lineGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+      const lineMat = new THREE.LineBasicMaterial({
+        vertexColors: true,
+        transparent: true,
+        opacity: 0.08,
+      });
+      window._memLinkLines = new THREE.LineSegments(lineGeo, lineMat);
+      scene.add(window._memLinkLines);
+    }
+
+    // Store edge lists on module scope for simulation
+    window._structuralEdges = structuralEdges;
+    window._memoryLinkEdges = memoryLinkEdges;
+
     // Update HUD
     document.getElementById('hud-nodes').textContent = graphNodes.length;
-    document.getElementById('hud-edges').textContent = graphEdges.length;
+    document.getElementById('hud-edges').textContent = allEdges.length;
 
     // Reset simulation
     simAlpha = 1.0;
@@ -655,15 +773,13 @@
     particles._alphas = alphas;
   }
 
-  // ─── Force Simulation (3D) ───
+  // ─── Force Simulation (3D — Hierarchical) ───
   function simulateForces() {
     if (simAlpha < ALPHA_MIN) return;
 
     const n = graphNodes.length;
-    const idToIdx = {};
-    graphNodes.forEach((nd, i) => { idToIdx[nd.id] = i; });
 
-    // Repulsion (Barnes-Hut approximation not needed for <200 nodes — brute force)
+    // Repulsion — all pairs, but hubs repel much more strongly
     for (let i = 0; i < n; i++) {
       for (let j = i + 1; j < n; j++) {
         const a = graphNodes[i];
@@ -679,29 +795,56 @@
           dist2 = dx * dx + dy * dy + dz * dz;
         }
         const dist = Math.sqrt(dist2);
-        const force = REPULSION * simAlpha / dist2;
+        // Hubs repel each other much more strongly to stay apart
+        const bothHubs = a._isHub && b._isHub;
+        const repMul = bothHubs ? 4.0 : 1.0;
+        const force = REPULSION * repMul * simAlpha / dist2;
         const fx = dx / dist * force;
         const fy = dy / dist * force;
         const fz = dz / dist * force;
-        a.vx += fx; a.vy += fy; a.vz += fz;
-        b.vx -= fx; b.vy -= fy; b.vz -= fz;
+        // Hubs are "heavy" — they receive less force
+        const aWeight = a._isHub ? 0.1 : 1.0;
+        const bWeight = b._isHub ? 0.1 : 1.0;
+        a.vx += fx * aWeight; a.vy += fy * aWeight; a.vz += fz * aWeight;
+        b.vx -= fx * bWeight; b.vy -= fy * bWeight; b.vz -= fz * bWeight;
       }
     }
 
-    // Spring forces (edges)
-    for (let i = 0; i < graphEdges.length; i++) {
-      const e = graphEdges[i];
-      const si = e._si;
-      const ti = e._ti;
-      if (si === undefined || ti === undefined) continue;
-      const a = graphNodes[si];
-      const b = graphNodes[ti];
+    // Structural spring forces (strong — these define the tree)
+    const sEdges = window._structuralEdges || [];
+    for (let i = 0; i < sEdges.length; i++) {
+      const e = sEdges[i];
+      if (e._si === undefined || e._ti === undefined) continue;
+      const a = graphNodes[e._si];
+      const b = graphNodes[e._ti];
       let dx = b.x - a.x;
       let dy = b.y - a.y;
       let dz = b.z - a.z;
       const dist = Math.sqrt(dx * dx + dy * dy + dz * dz) || 0.01;
-      const displacement = dist - SPRING_LENGTH;
-      const force = SPRING_K * displacement * simAlpha;
+      const displacement = dist - STRUCTURAL_SPRING_LENGTH;
+      const force = STRUCTURAL_SPRING_K * displacement * simAlpha;
+      const fx = dx / dist * force;
+      const fy = dy / dist * force;
+      const fz = dz / dist * force;
+      const aWeight = a._isHub ? 0.05 : 1.0;
+      const bWeight = b._isHub ? 0.05 : 1.0;
+      a.vx += fx * aWeight; a.vy += fy * aWeight; a.vz += fz * aWeight;
+      b.vx -= fx * bWeight; b.vy -= fy * bWeight; b.vz -= fz * bWeight;
+    }
+
+    // Memory link spring forces (very weak — just gentle clustering)
+    const mEdges = window._memoryLinkEdges || [];
+    for (let i = 0; i < mEdges.length; i++) {
+      const e = mEdges[i];
+      if (e._si === undefined || e._ti === undefined) continue;
+      const a = graphNodes[e._si];
+      const b = graphNodes[e._ti];
+      let dx = b.x - a.x;
+      let dy = b.y - a.y;
+      let dz = b.z - a.z;
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz) || 0.01;
+      const displacement = dist - MEMORY_LINK_SPRING_LENGTH;
+      const force = MEMORY_LINK_SPRING_K * displacement * simAlpha;
       const fx = dx / dist * force;
       const fy = dy / dist * force;
       const fz = dz / dist * force;
@@ -709,12 +852,19 @@
       b.vx -= fx; b.vy -= fy; b.vz -= fz;
     }
 
-    // Center gravity
+    // Hub anchor gravity — hubs gently pulled back to their initial positions
     for (let i = 0; i < n; i++) {
       const nd = graphNodes[i];
-      nd.vx -= nd.x * CENTER_GRAVITY * simAlpha;
-      nd.vy -= nd.y * CENTER_GRAVITY * simAlpha;
-      nd.vz -= nd.z * CENTER_GRAVITY * simAlpha;
+      if (nd._isHub) {
+        nd.vx += (nd._hubAnchorX - nd.x) * 0.01 * simAlpha;
+        nd.vy += (nd._hubAnchorY - nd.y) * 0.01 * simAlpha;
+        nd.vz += (nd._hubAnchorZ - nd.z) * 0.01 * simAlpha;
+      } else {
+        // Regular center gravity for non-hubs (weak)
+        nd.vx -= nd.x * CENTER_GRAVITY * simAlpha;
+        nd.vy -= nd.y * CENTER_GRAVITY * simAlpha;
+        nd.vz -= nd.z * CENTER_GRAVITY * simAlpha;
+      }
     }
 
     // Apply velocity + damping
@@ -738,19 +888,36 @@
       nm.mesh.position.set(nm.data.x, nm.data.y, nm.data.z);
     }
 
-    // Update edge lines
-    if (edgeLines && graphEdges.length > 0) {
+    // Update structural edge lines
+    const sEdges = window._structuralEdges || [];
+    if (edgeLines && sEdges.length > 0) {
       const pos = edgeLines.geometry.attributes.position.array;
-      for (let i = 0; i < graphEdges.length; i++) {
-        const e = graphEdges[i];
+      for (let i = 0; i < sEdges.length; i++) {
+        const e = sEdges[i];
         if (e._si === undefined || e._ti === undefined) continue;
         const s = graphNodes[e._si];
         const t = graphNodes[e._ti];
         const off = i * 6;
-        pos[off]     = s.x; pos[off + 1] = s.y; pos[off + 2] = s.z;
-        pos[off + 3] = t.x; pos[off + 4] = t.y; pos[off + 5] = t.z;
+        pos[off]     = s.x; pos[off+1] = s.y; pos[off+2] = s.z;
+        pos[off + 3] = t.x; pos[off+4] = t.y; pos[off+5] = t.z;
       }
       edgeLines.geometry.attributes.position.needsUpdate = true;
+    }
+
+    // Update memory link lines
+    const mEdges = window._memoryLinkEdges || [];
+    if (window._memLinkLines && mEdges.length > 0) {
+      const pos = window._memLinkLines.geometry.attributes.position.array;
+      for (let i = 0; i < mEdges.length; i++) {
+        const e = mEdges[i];
+        if (e._si === undefined || e._ti === undefined) continue;
+        const s = graphNodes[e._si];
+        const t = graphNodes[e._ti];
+        const off = i * 6;
+        pos[off]     = s.x; pos[off+1] = s.y; pos[off+2] = s.z;
+        pos[off + 3] = t.x; pos[off+4] = t.y; pos[off+5] = t.z;
+      }
+      window._memLinkLines.geometry.attributes.position.needsUpdate = true;
     }
   }
 
