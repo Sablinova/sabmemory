@@ -44,19 +44,19 @@
   const PARTICLE_COUNT = 200;
   const LAYOUT_DURATION = 2.0; // seconds to animate layout
 
-  // ─── Color Palette ───
+  // ─── Color Palette (Cyberpunk) ───
   const COLORS = {
-    memory:       0x818cf8,
-    entity:       0xc084fc,
-    project:      0x34d399,
-    obsolete:     0xf87171,
-    forgotten:    0x475569,
-    memoryLink:   0x818cf8,
-    entityAssoc:  0xc084fc,
-    projectAssoc: 0x34d399,
-    relationship: 0xfb923c,
-    entityProject:0xfbbf24,
-    background:   0x070a0f,
+    memory:       0x00d4ff,
+    entity:       0xaa55ff,
+    project:      0x00ff88,
+    obsolete:     0xff3355,
+    forgotten:    0x2a4a5a,
+    memoryLink:   0x00d4ff,
+    entityAssoc:  0xaa55ff,
+    projectAssoc: 0x00ff88,
+    relationship: 0xff6622,
+    entityProject:0xffaa00,
+    background:   0x0f2240,
   };
 
   // ─── Init ───
@@ -431,14 +431,14 @@
     return tex;
   }
 
-  // ─── Text Sprite ───
+  // ─── Text Sprite (Orbitron + Neon Glow) ───
   function createTextSprite(text, color, fontSize) {
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
     const dpr = 2;
     const sz = (fontSize || 40) * dpr;
     const pad = 16 * dpr;
-    ctx.font = `600 ${sz}px Inter, sans-serif`;
+    ctx.font = `bold ${sz}px Orbitron, sans-serif`;
     const metrics = ctx.measureText(text);
     const w = Math.ceil(metrics.width) + pad * 2;
     const h = sz + pad * 2;
@@ -446,7 +446,7 @@
     canvas.height = h;
 
     // Subtle background
-    ctx.fillStyle = 'rgba(7, 10, 15, 0.6)';
+    ctx.fillStyle = 'rgba(15, 34, 64, 0.6)';
     const rx = pad * 0.4, ry = pad * 0.4;
     const rw = w - pad * 0.8, rh = h - pad * 0.8;
     const cr = 8 * dpr;
@@ -462,13 +462,13 @@
     ctx.quadraticCurveTo(rx, ry, rx + cr, ry);
     ctx.fill();
 
-    // Text
-    ctx.font = `600 ${sz}px Inter, sans-serif`;
+    // Text with neon glow
+    ctx.font = `bold ${sz}px Orbitron, sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.shadowColor = 'rgba(0,0,0,0.5)';
-    ctx.shadowBlur = 4 * dpr;
-    ctx.fillStyle = color || '#e2e8f0';
+    ctx.shadowColor = color || '#00d4ff';
+    ctx.shadowBlur = 16 * dpr;
+    ctx.fillStyle = color || '#00d4ff';
     ctx.fillText(text, w / 2, h / 2);
 
     const tex = new THREE.CanvasTexture(canvas);
@@ -857,42 +857,146 @@
   }
 
   function createBackground() {
-    // Gradient background sphere
-    const bgGeo = new THREE.SphereGeometry(800, 32, 32);
+    // Procedural galaxy background sphere
+    const bgGeo = new THREE.SphereGeometry(800, 64, 64);
     const bgMat = new THREE.ShaderMaterial({
       side: THREE.BackSide,
       uniforms: {
-        color1: { value: new THREE.Color(0x070a0f) },
-        color2: { value: new THREE.Color(0x0d1832) },
+        uTime: { value: 0.0 },
       },
       vertexShader: `
         varying vec3 vWorldPos;
+        varying vec2 vUv;
         void main() {
+          vUv = uv;
           vec4 worldPos = modelMatrix * vec4(position, 1.0);
           vWorldPos = worldPos.xyz;
           gl_Position = projectionMatrix * viewMatrix * worldPos;
         }
       `,
       fragmentShader: `
-        uniform vec3 color1;
-        uniform vec3 color2;
+        uniform float uTime;
         varying vec3 vWorldPos;
+        varying vec2 vUv;
+
+        // Hash functions for noise
+        float hash(vec2 p) {
+          return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+        }
+
+        float hash3(vec3 p) {
+          return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453);
+        }
+
+        // 2D noise
+        float noise(vec2 p) {
+          vec2 i = floor(p);
+          vec2 f = fract(p);
+          f = f * f * (3.0 - 2.0 * f);
+          float a = hash(i);
+          float b = hash(i + vec2(1.0, 0.0));
+          float c = hash(i + vec2(0.0, 1.0));
+          float d = hash(i + vec2(1.0, 1.0));
+          return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+        }
+
+        // FBM (Fractal Brownian Motion)
+        float fbm(vec2 p) {
+          float v = 0.0;
+          float a = 0.5;
+          mat2 rot = mat2(0.8, 0.6, -0.6, 0.8);
+          for (int i = 0; i < 5; i++) {
+            v += a * noise(p);
+            p = rot * p * 2.0;
+            a *= 0.5;
+          }
+          return v;
+        }
+
         void main() {
-          float h = normalize(vWorldPos).y * 0.5 + 0.5;
-          gl_FragColor = vec4(mix(color2, color1, h), 1.0);
+          vec3 dir = normalize(vWorldPos);
+
+          // Spherical coordinates
+          float theta = atan(dir.z, dir.x);
+          float phi = acos(dir.y);
+
+          // UV from spherical coords
+          vec2 uv = vec2(theta / 6.28318 + 0.5, phi / 3.14159);
+
+          // Base color: medium navy gradient
+          vec3 bgCol1 = vec3(0.059, 0.133, 0.251); // #0f2240
+          vec3 bgCol2 = vec3(0.086, 0.157, 0.314); // #162850
+          vec3 col = mix(bgCol2, bgCol1, dir.y * 0.5 + 0.5);
+
+          // Spiral arm structure
+          float spiralAngle = theta + dir.y * 1.5;
+          float spiral = sin(spiralAngle * 2.0 + uTime * 0.02) * 0.5 + 0.5;
+          spiral *= sin(spiralAngle * 3.0 - uTime * 0.015) * 0.5 + 0.5;
+          spiral = pow(spiral, 2.0) * 0.3;
+
+          // Nebula clouds using FBM
+          vec2 nebUV = uv * 4.0 + uTime * 0.005;
+          float neb1 = fbm(nebUV);
+          float neb2 = fbm(nebUV * 1.5 + 3.7);
+          float neb3 = fbm(nebUV * 0.8 + 7.3);
+
+          // Purple nebula patches
+          vec3 nebPurple = vec3(0.25, 0.1, 0.4) * pow(neb1, 2.5) * 0.5;
+
+          // Blue nebula patches
+          vec3 nebBlue = vec3(0.05, 0.15, 0.35) * pow(neb2, 2.0) * 0.6;
+
+          // Pink/magenta wisps
+          vec3 nebPink = vec3(0.3, 0.05, 0.2) * pow(neb3, 3.0) * 0.3;
+
+          // Combine nebula with spiral structure
+          col += (nebPurple + nebBlue + nebPink) * (0.5 + spiral);
+
+          // Star density modulated by spiral arms
+          float starDensity = 0.3 + spiral * 0.5;
+
+          // Layer 1: tiny dim stars (many)
+          vec2 starUV1 = uv * 200.0;
+          float star1 = hash(floor(starUV1));
+          star1 = step(1.0 - starDensity * 0.015, star1);
+          col += vec3(0.6, 0.7, 0.9) * star1 * 0.3;
+
+          // Layer 2: medium stars
+          vec2 starUV2 = uv * 80.0;
+          float star2 = hash(floor(starUV2) + 47.0);
+          star2 = step(1.0 - starDensity * 0.008, star2);
+          float starBright2 = hash(floor(starUV2) + 91.0);
+          col += vec3(0.7, 0.8, 1.0) * star2 * (0.4 + starBright2 * 0.3);
+
+          // Layer 3: bright accent stars (rare, twinkling)
+          vec2 starUV3 = uv * 30.0;
+          float star3 = hash(floor(starUV3) + 137.0);
+          star3 = step(0.992, star3);
+          float twinkle = sin(uTime * 2.0 + hash(floor(starUV3)) * 6.28) * 0.5 + 0.5;
+          vec3 starCol3 = mix(vec3(0.5, 0.7, 1.0), vec3(0.8, 0.6, 1.0), hash(floor(starUV3) + 200.0));
+          col += starCol3 * star3 * (0.5 + twinkle * 0.5);
+
+          // Subtle galactic core glow at center
+          float coreDist = length(dir.xz);
+          float coreGlow = exp(-coreDist * coreDist * 3.0) * 0.15;
+          col += vec3(0.15, 0.2, 0.4) * coreGlow;
+
+          gl_FragColor = vec4(col, 1.0);
         }
       `,
     });
     const bgMesh = new THREE.Mesh(bgGeo, bgMat);
+    bgMesh.userData.isBgSphere = true;
     scene.add(bgMesh);
 
-    // Star field — layer 1: tiny white stars
-    const starCount1 = 400;
+    // Additional foreground star layers (Three.js Points)
+    // Layer 1: tiny white stars close to graph
+    const starCount1 = 500;
     const starPos1 = new Float32Array(starCount1 * 3);
     for (let i = 0; i < starCount1; i++) {
       const theta = Math.random() * Math.PI * 2;
       const phi = Math.acos(2 * Math.random() - 1);
-      const r = 300 + Math.random() * 200;
+      const r = 200 + Math.random() * 300;
       starPos1[i * 3] = r * Math.sin(phi) * Math.cos(theta);
       starPos1[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
       starPos1[i * 3 + 2] = r * Math.cos(phi);
@@ -900,23 +1004,23 @@
     const starGeo1 = new THREE.BufferGeometry();
     starGeo1.setAttribute('position', new THREE.BufferAttribute(starPos1, 3));
     const starMat1 = new THREE.PointsMaterial({
-      color: 0xffffff,
+      color: 0xaaccff,
       size: 0.3,
       transparent: true,
-      opacity: 0.35,
+      opacity: 0.3,
       sizeAttenuation: true,
       depthWrite: false,
     });
     const stars1 = new THREE.Points(starGeo1, starMat1);
     scene.add(stars1);
 
-    // Star field — layer 2: fewer, larger blue-tinted stars
-    const starCount2 = 60;
+    // Layer 2: larger cyan-tinted accent stars
+    const starCount2 = 80;
     const starPos2 = new Float32Array(starCount2 * 3);
     for (let i = 0; i < starCount2; i++) {
       const theta = Math.random() * Math.PI * 2;
       const phi = Math.acos(2 * Math.random() - 1);
-      const r = 250 + Math.random() * 250;
+      const r = 180 + Math.random() * 350;
       starPos2[i * 3] = r * Math.sin(phi) * Math.cos(theta);
       starPos2[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
       starPos2[i * 3 + 2] = r * Math.cos(phi);
@@ -924,10 +1028,10 @@
     const starGeo2 = new THREE.BufferGeometry();
     starGeo2.setAttribute('position', new THREE.BufferAttribute(starPos2, 3));
     const starMat2 = new THREE.PointsMaterial({
-      color: 0x8899cc,
+      color: 0x00d4ff,
       size: 0.6,
       transparent: true,
-      opacity: 0.45,
+      opacity: 0.4,
       sizeAttenuation: true,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
@@ -1067,7 +1171,7 @@
       // Labels
       let label;
       if (isHub) {
-        const labelColor = n.type === 'entity' ? '#c084fc' : '#34d399';
+        const labelColor = n.type === 'entity' ? '#aa55ff' : '#00ff88';
         label = createTextSprite(n.label, labelColor, 40);
         label.position.set(n.x, n.y + r + 4, n.z);
         label.visible = true;
@@ -1186,7 +1290,7 @@
     geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
 
     const mat = new THREE.PointsMaterial({
-      color: 0x818cf8,
+      color: 0x00d4ff,
       size: 0.3,
       transparent: true,
       opacity: 0.15,
@@ -1622,6 +1726,13 @@
 
     const dt = clock.getDelta();
     const elapsed = clock.getElapsedTime();
+
+    // Update galaxy shader time
+    scene.traverse(function(obj) {
+      if (obj.userData && obj.userData.isBgSphere && obj.material && obj.material.uniforms) {
+        obj.material.uniforms.uTime.value = elapsed;
+      }
+    });
 
     // Layout animation
     updateLayout(dt);
