@@ -1,50 +1,50 @@
 @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;600;700;800;900&family=Share+Tech+Mono&family=Rajdhani:wght@300;400;500;600;700&display=swap');
 
 :root {
-  /* Background -- light airy blue-white */
-  --bg: #e4ecf4;
-  --bg-deep: #dce6f0;
-  --bg-surface: rgba(220, 232, 244, 0.92);
-  --bg-card: rgba(226, 236, 248, 0.90);
-  --bg-hover: rgba(210, 225, 242, 0.8);
-  --bg-glass: rgba(230, 238, 248, 0.82);
+  /* Background -- medium blue-gray */
+  --bg: #2a4a6e;
+  --bg-deep: #2e5078;
+  --bg-surface: rgba(42, 74, 110, 0.90);
+  --bg-card: rgba(48, 80, 118, 0.88);
+  --bg-hover: rgba(55, 90, 130, 0.75);
+  --bg-glass: rgba(40, 68, 100, 0.80);
 
   /* Borders */
-  --border: rgba(0, 140, 200, 0.18);
-  --border-glow: rgba(0, 160, 220, 0.30);
-  --border-light: rgba(0, 160, 220, 0.45);
+  --border: rgba(100, 180, 230, 0.20);
+  --border-glow: rgba(100, 180, 230, 0.35);
+  --border-light: rgba(100, 180, 230, 0.50);
 
   /* Text */
-  --text: #1a2a3a;
-  --text-muted: #4a6a8a;
-  --text-dim: #7a96b0;
+  --text: #d0e2f0;
+  --text-muted: #8aaabe;
+  --text-dim: #6088a8;
 
-  /* Accent -- deeper cyan for light bg */
-  --accent: #0099cc;
-  --accent-dim: rgba(0, 153, 204, 0.12);
-  --accent-glow: rgba(0, 153, 204, 0.35);
+  /* Accent -- bright cyan */
+  --accent: #00ccee;
+  --accent-dim: rgba(0, 204, 238, 0.15);
+  --accent-glow: rgba(0, 204, 238, 0.40);
 
   /* Semantic colors */
-  --green: #00b366;
-  --green-dim: rgba(0, 179, 102, 0.12);
-  --yellow: #cc8800;
-  --yellow-dim: rgba(204, 136, 0, 0.12);
-  --red: #dd2244;
-  --red-dim: rgba(221, 34, 68, 0.12);
-  --purple: #7744cc;
-  --purple-dim: rgba(119, 68, 204, 0.12);
-  --orange: #dd5500;
-  --cyan: #00aa99;
+  --green: #00ee88;
+  --green-dim: rgba(0, 238, 136, 0.15);
+  --yellow: #eeaa00;
+  --yellow-dim: rgba(238, 170, 0, 0.15);
+  --red: #ff4466;
+  --red-dim: rgba(255, 68, 102, 0.15);
+  --purple: #aa66ff;
+  --purple-dim: rgba(170, 102, 255, 0.15);
+  --orange: #ff7733;
+  --cyan: #00ddbb;
 
   /* Node colors */
-  --node-memory: #0099cc;
-  --node-entity: #7744cc;
-  --node-project: #00b366;
+  --node-memory: #00ccee;
+  --node-entity: #aa66ff;
+  --node-project: #00ee88;
 
-  /* Glow system (subtle on light) */
-  --glow-sm: 0 0 6px rgba(0, 153, 204, 0.2);
-  --glow-md: 0 0 12px rgba(0, 153, 204, 0.25);
-  --glow-lg: 0 0 24px rgba(0, 153, 204, 0.2), 0 0 48px rgba(0, 153, 204, 0.08);
+  /* Glow system */
+  --glow-sm: 0 0 8px rgba(0, 204, 238, 0.25);
+  --glow-md: 0 0 16px rgba(0, 204, 238, 0.35);
+  --glow-lg: 0 0 28px rgba(0, 204, 238, 0.25), 0 0 56px rgba(0, 204, 238, 0.10);
 
   /* Fonts */
   --font-display: 'Orbitron', sans-serif;
@@ -71,7 +71,7 @@ html, body {
 }
 
 ::selection {
-  background: rgba(0, 153, 204, 0.25);
+  background: rgba(0, 204, 238, 0.30);
   color: var(--text);
 }
 
@@ -103,7 +103,7 @@ body::after {
   inset: 0;
   pointer-events: none;
   z-index: 9998;
-  background: radial-gradient(ellipse at center, transparent 60%, rgba(0, 20, 50, 0.08) 100%);
+  background: radial-gradient(ellipse at center, transparent 55%, rgba(0, 10, 30, 0.15) 100%);
 }
 
 /* ─── Layout ─── */
@@ -246,8 +246,8 @@ nav {
   padding: 0 20px;
   height: 36px;
   align-items: center;
-  background: rgba(215, 228, 242, 0.7);
-  border-bottom: 1px solid rgba(0, 140, 200, 0.10);
+  background: rgba(35, 60, 95, 0.65);
+  border-bottom: 1px solid rgba(100, 180, 230, 0.12);
   flex-shrink: 0;
   overflow-x: auto;
 }
@@ -257,7 +257,7 @@ nav {
   align-items: center;
   gap: 6px;
   padding: 0 16px;
-  border-right: 1px solid rgba(0, 140, 200, 0.10);
+  border-right: 1px solid rgba(100, 180, 230, 0.10);
   white-space: nowrap;
 }
 
@@ -518,7 +518,7 @@ h2 {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(100, 130, 170, 0.35);
+  background: rgba(10, 25, 50, 0.55);
   backdrop-filter: blur(8px);
 }
 .modal[hidden] { display: none; }
@@ -606,7 +606,7 @@ h2 {
   color: var(--text);
   white-space: pre-wrap;
   word-break: break-word;
-  background: rgba(200, 218, 238, 0.6);
+  background: rgba(20, 40, 70, 0.45);
   padding: 12px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -780,7 +780,7 @@ h2 {
   font-weight: 600;
   letter-spacing: 1.5px;
   color: var(--text-muted);
-  background: rgba(210, 225, 242, 0.8);
+  background: rgba(35, 60, 95, 0.75);
   border: 1px solid var(--border);
   padding: 4px 14px;
   cursor: pointer;

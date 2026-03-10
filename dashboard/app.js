@@ -56,7 +56,7 @@
     projectAssoc: 0x00ff88,
     relationship: 0xff6622,
     entityProject:0xffaa00,
-    background:   0xdce8f4,
+    background:   0x2a4a6e,
   };
 
   // ─── Init ───
@@ -740,16 +740,16 @@
     renderer.setSize(width, height);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.toneMapping = THREE.ReinhardToneMapping;
-    renderer.toneMappingExposure = 1.4;
+    renderer.toneMappingExposure = 1.2;
 
     // ─── Post-processing (softer Bloom) ───
     composer = new THREE.EffectComposer(renderer);
     composer.addPass(new THREE.RenderPass(scene, camera));
     const bloomPass = new THREE.UnrealBloomPass(
       new THREE.Vector2(width, height),
-      0.4,   // strength (was 0.8)
-      0.3,   // radius (was 0.4)
-      0.6    // threshold (was 0.5)
+      0.35,  // strength
+      0.3,   // radius
+      0.85   // threshold (high -- only bright accents bloom, not the background)
     );
     composer.addPass(bloomPass);
 
@@ -770,9 +770,9 @@
     mouse = new THREE.Vector2(-9999, -9999);
 
     // ─── Lighting ───
-    const hemiLight = new THREE.HemisphereLight(0xffffff, 0xb0c4de, 1.6);
+    const hemiLight = new THREE.HemisphereLight(0xccddee, 0x667788, 1.2);
     scene.add(hemiLight);
-    const ambientLight = new THREE.AmbientLight(0xe8f0ff, 0.9);
+    const ambientLight = new THREE.AmbientLight(0x8899aa, 0.7);
     scene.add(ambientLight);
 
     // ─── Background (simple light) ───
@@ -880,9 +880,9 @@
           vec3 dir = normalize(vWorldPos);
           float y = dir.y * 0.5 + 0.5;
 
-          // Soft vertical gradient: light steel blue top -> pale blue-white bottom
-          vec3 top = vec3(0.78, 0.85, 0.94);
-          vec3 bot = vec3(0.88, 0.92, 0.97);
+          // Soft vertical gradient: medium steel blue top -> lighter blue-gray bottom
+          vec3 top = vec3(0.22, 0.35, 0.52);
+          vec3 bot = vec3(0.30, 0.42, 0.58);
           vec3 col = mix(bot, top, smoothstep(0.1, 0.9, y));
 
           // Very gentle slow-moving color shift
