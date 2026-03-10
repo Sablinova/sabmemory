@@ -1,13 +1,13 @@
 @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;600;700;800;900&family=Share+Tech+Mono&family=Rajdhani:wght@300;400;500;600;700&display=swap');
 
 :root {
-  /* Background -- lighter navy blue */
-  --bg: #0f2240;
-  --bg-deep: #162850;
-  --bg-surface: rgba(15, 34, 64, 0.88);
-  --bg-card: rgba(18, 38, 72, 0.85);
-  --bg-hover: rgba(25, 50, 90, 0.7);
-  --bg-glass: rgba(15, 30, 55, 0.75);
+  /* Background -- brighter navy blue */
+  --bg: #1a3460;
+  --bg-deep: #1e3a68;
+  --bg-surface: rgba(26, 52, 96, 0.88);
+  --bg-card: rgba(30, 58, 105, 0.85);
+  --bg-hover: rgba(38, 68, 120, 0.7);
+  --bg-glass: rgba(24, 46, 82, 0.75);
 
   /* Borders */
   --border: rgba(0, 200, 255, 0.15);

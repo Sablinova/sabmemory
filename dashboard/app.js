@@ -56,7 +56,7 @@
     projectAssoc: 0x00ff88,
     relationship: 0xff6622,
     entityProject:0xffaa00,
-    background:   0x0f2240,
+    background:   0x1a3460,
   };
 
   // ─── Init ───
@@ -770,9 +770,9 @@
     mouse = new THREE.Vector2(-9999, -9999);
 
     // ─── Lighting ───
-    const hemiLight = new THREE.HemisphereLight(0x4466aa, 0x222244, 0.6);
+    const hemiLight = new THREE.HemisphereLight(0x6688cc, 0x334466, 1.0);
     scene.add(hemiLight);
-    const ambientLight = new THREE.AmbientLight(0x223344, 0.3);
+    const ambientLight = new THREE.AmbientLight(0x445566, 0.6);
     scene.add(ambientLight);
 
     // ─── Background (procedural star field + gradient) ───
@@ -857,7 +857,7 @@
   }
 
   function createBackground() {
-    // Cyberpunk digital void background sphere
+    // Clean cyberpunk background sphere — gentle nebula + faint hex grid + subtle scanlines
     const bgGeo = new THREE.SphereGeometry(800, 64, 64);
     const bgMat = new THREE.ShaderMaterial({
       side: THREE.BackSide,
@@ -911,122 +911,49 @@
           float phi = acos(dir.y);
           vec2 uv = vec2(theta / 6.28318 + 0.5, phi / 3.14159);
 
-          // === BASE: lighter navy gradient ===
-          vec3 bgTop = vec3(0.08, 0.16, 0.30);     // lighter navy
-          vec3 bgBot = vec3(0.05, 0.10, 0.22);     // medium navy
-          vec3 bgMid = vec3(0.10, 0.18, 0.32);     // brightest band
+          // === BASE: brighter navy gradient ===
+          vec3 bgTop = vec3(0.14, 0.24, 0.42);
+          vec3 bgBot = vec3(0.10, 0.18, 0.34);
+          vec3 bgMid = vec3(0.16, 0.28, 0.46);
           float yFact = dir.y * 0.5 + 0.5;
           vec3 col = mix(bgBot, bgMid, smoothstep(0.3, 0.5, yFact));
           col = mix(col, bgTop, smoothstep(0.5, 0.8, yFact));
 
-          // === LARGE NEBULA GLOW PATCHES (depth + color) ===
-          float neb1 = fbm(uv * 3.0 + uTime * 0.008);
-          float neb2 = fbm(uv * 4.0 + vec2(5.0, 3.0) - uTime * 0.006);
-          float neb3 = fbm(uv * 2.5 + vec2(9.0, 1.0) + uTime * 0.004);
+          // === GENTLE NEBULA GLOW ===
+          float neb1 = fbm(uv * 3.0 + uTime * 0.006);
+          float neb2 = fbm(uv * 4.0 + vec2(5.0, 3.0) - uTime * 0.004);
+          float neb3 = fbm(uv * 2.5 + vec2(9.0, 1.0) + uTime * 0.003);
           // Cyan nebula
-          col += vec3(0.0, 0.08, 0.14) * pow(neb1, 2.0);
+          col += vec3(0.0, 0.06, 0.10) * pow(neb1, 2.0);
           // Purple nebula
-          col += vec3(0.08, 0.02, 0.12) * pow(neb2, 2.0);
-          // Deep blue glow
-          col += vec3(0.03, 0.06, 0.12) * pow(neb3, 1.8);
+          col += vec3(0.06, 0.02, 0.09) * pow(neb2, 2.0);
+          // Blue glow
+          col += vec3(0.02, 0.05, 0.09) * pow(neb3, 1.8);
 
-          // === HEX GRID (large, faint, at multiple scales) ===
-          // Scale 1: large hex grid
+          // === FAINT HEX GRID (single scale, region-faded) ===
           vec2 hex1 = uv * vec2(24.0, 16.0);
           vec2 hf1 = fract(hex1);
           float hexLine1 = step(0.94, hf1.x) + step(0.94, hf1.y);
-          // Fade grid by region (not uniform -- more visible in some areas)
-          float hexFade1 = smoothstep(0.3, 0.6, neb1) * 0.5;
-          col += vec3(0.0, 0.04, 0.07) * hexLine1 * hexFade1;
+          float hexFade1 = smoothstep(0.3, 0.6, neb1) * 0.35;
+          col += vec3(0.0, 0.03, 0.05) * hexLine1 * hexFade1;
 
-          // Scale 2: smaller detailed grid
-          vec2 hex2 = uv * vec2(60.0, 40.0);
-          vec2 hf2 = fract(hex2);
-          float hexLine2 = step(0.96, hf2.x) + step(0.96, hf2.y);
-          float hexFade2 = smoothstep(0.4, 0.7, neb2) * 0.3;
-          col += vec3(0.0, 0.02, 0.04) * hexLine2 * hexFade2;
+          // === SPARSE STAR POINTS ===
+          vec2 starUV = uv * 100.0;
+          float starHash = hash(floor(starUV));
+          float starOn = step(0.994, starHash);
+          float starPulse = sin(uTime * (0.5 + hash(floor(starUV) + 50.0) * 2.0)) * 0.5 + 0.5;
+          col += vec3(0.08, 0.12, 0.18) * starOn * (0.6 + starPulse * 0.4);
 
-          // === CIRCUIT TRACE LINES ===
-          // Horizontal traces that pulse
-          for (int i = 0; i < 6; i++) {
-            float fi = float(i);
-            float traceY = hash(vec2(fi, 0.0)) * 0.8 + 0.1;
-            float traceDist = abs(uv.y - traceY);
-            float traceLine = smoothstep(0.002, 0.0, traceDist);
-            // Trace extends partially across (not full width)
-            float traceStart = hash(vec2(fi, 1.0)) * 0.3;
-            float traceEnd = traceStart + 0.2 + hash(vec2(fi, 2.0)) * 0.4;
-            float traceX = smoothstep(traceStart, traceStart + 0.01, uv.x) *
-                           smoothstep(traceEnd, traceEnd - 0.01, uv.x);
-            // Pulse along the trace
-            float pulse = sin(uv.x * 30.0 - uTime * (1.0 + fi * 0.3) + fi * 2.0) * 0.5 + 0.5;
-            pulse = pow(pulse, 4.0);
-            // Bright cyan traces
-            col += vec3(0.0, 0.12, 0.18) * traceLine * traceX * (0.3 + pulse * 0.7);
-            // Node dots at trace endpoints
-            float dotStart = smoothstep(0.006, 0.0, length(uv - vec2(traceStart, traceY)));
-            float dotEnd = smoothstep(0.006, 0.0, length(uv - vec2(traceEnd, traceY)));
-            col += vec3(0.0, 0.15, 0.25) * (dotStart + dotEnd) * 0.5;
-          }
-
-          // === VERTICAL CIRCUIT BRANCHES ===
-          for (int i = 0; i < 4; i++) {
-            float fi = float(i);
-            float traceX = hash(vec2(fi + 20.0, 5.0)) * 0.8 + 0.1;
-            float traceDist = abs(uv.x - traceX);
-            float traceLine = smoothstep(0.0015, 0.0, traceDist);
-            float traceStart = hash(vec2(fi + 20.0, 6.0)) * 0.3 + 0.1;
-            float traceEnd = traceStart + 0.15 + hash(vec2(fi + 20.0, 7.0)) * 0.3;
-            float traceY = smoothstep(traceStart, traceStart + 0.01, uv.y) *
-                           smoothstep(traceEnd, traceEnd - 0.01, uv.y);
-            float pulse = sin(uv.y * 25.0 - uTime * (0.8 + fi * 0.2) + fi * 3.0) * 0.5 + 0.5;
-            pulse = pow(pulse, 4.0);
-            col += vec3(0.06, 0.0, 0.12) * traceLine * traceY * (0.3 + pulse * 0.7);
-          }
-
-          // === DIGITAL RAIN COLUMNS ===
-          float rainX = floor(uv.x * 50.0);
-          float rainSeed = hash(vec2(rainX, 0.0));
-          float rainActive = step(0.82, rainSeed);
-          float rainSpeed = 0.2 + rainSeed * 0.6;
-          float rainY = fract(uv.y * 2.5 - uTime * rainSpeed);
-          float rainFade = pow(rainY, 2.0) * smoothstep(1.0, 0.3, rainY);
-          float rainDrop = rainActive * rainFade * 0.08;
-          col += vec3(0.0, rainDrop * 0.9, rainDrop);
-          // Bright leading edge
-          float rainHead = smoothstep(0.02, 0.0, rainY) * rainActive;
-          col += vec3(0.0, 0.15, 0.2) * rainHead;
-
-          // === GLITCH BLOCKS (flickering data corruption) ===
-          vec2 blockUV = floor(uv * vec2(80.0, 50.0));
-          float blockSeed = hash(blockUV + floor(uTime * 3.0));
-          float blockOn = step(0.992, blockSeed);
-          // Colored blocks: randomly cyan, purple, or white
-          float blockHue = hash(blockUV + 100.0);
-          vec3 blockCol = blockHue < 0.4 ? vec3(0.0, 0.2, 0.3) :
-                          blockHue < 0.7 ? vec3(0.15, 0.0, 0.2) :
-                                           vec3(0.15, 0.15, 0.2);
-          col += blockCol * blockOn;
-
-          // === SCATTERED BRIGHT POINTS (like distant city lights) ===
-          vec2 lightUV = uv * 120.0;
-          float lightHash = hash(floor(lightUV));
-          float lightOn = step(0.995, lightHash);
-          float lightPulse = sin(uTime * (1.0 + hash(floor(lightUV) + 50.0) * 3.0)) * 0.5 + 0.5;
-          vec3 lightCol = mix(vec3(0.0, 0.3, 0.4), vec3(0.2, 0.1, 0.35),
-                              hash(floor(lightUV) + 70.0));
-          col += lightCol * lightOn * (0.5 + lightPulse * 0.5);
-
-          // === CRT SCANLINES (subtle) ===
-          float scanline = sin(uv.y * 500.0) * 0.5 + 0.5;
-          scanline = pow(scanline, 10.0) * 0.06;
+          // === VERY SUBTLE SCANLINES ===
+          float scanline = sin(uv.y * 400.0) * 0.5 + 0.5;
+          scanline = pow(scanline, 12.0) * 0.03;
           col -= vec3(scanline);
 
-          // === SOFT VIGNETTE ===
+          // === MINIMAL VIGNETTE (barely visible) ===
           vec2 vigUV = uv * 2.0 - 1.0;
-          float vig = 1.0 - dot(vigUV * 0.4, vigUV * 0.4);
-          vig = smoothstep(0.0, 0.7, vig);
-          col *= (0.7 + vig * 0.3);
+          float vig = 1.0 - dot(vigUV * 0.3, vigUV * 0.3);
+          vig = smoothstep(0.0, 0.8, vig);
+          col *= (0.92 + vig * 0.08);
 
           gl_FragColor = vec4(col, 1.0);
         }
