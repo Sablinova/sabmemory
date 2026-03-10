@@ -46,17 +46,17 @@
 
   // ─── Color Palette (Cyberpunk) ───
   const COLORS = {
-    memory:       0x00d4ff,
-    entity:       0xaa55ff,
+    memory:       0x00ffff,
+    entity:       0xcc44ff,
     project:      0x00ff88,
-    obsolete:     0xff3355,
-    forgotten:    0x2a4a5a,
-    memoryLink:   0x00d4ff,
-    entityAssoc:  0xaa55ff,
+    obsolete:     0xff2266,
+    forgotten:    0x334455,
+    memoryLink:   0x00ffff,
+    entityAssoc:  0xcc44ff,
     projectAssoc: 0x00ff88,
-    relationship: 0xff6622,
-    entityProject:0xffaa00,
-    background:   0x2a4a6e,
+    relationship: 0xff6600,
+    entityProject:0xffdd00,
+    background:   0x0a0a18,
   };
 
   // ─── Init ───
@@ -740,16 +740,16 @@
     renderer.setSize(width, height);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.toneMapping = THREE.ReinhardToneMapping;
-    renderer.toneMappingExposure = 1.2;
+    renderer.toneMappingExposure = 1.0;
 
-    // ─── Post-processing (softer Bloom) ───
+    // ─── Post-processing (neon Bloom) ───
     composer = new THREE.EffectComposer(renderer);
     composer.addPass(new THREE.RenderPass(scene, camera));
     const bloomPass = new THREE.UnrealBloomPass(
       new THREE.Vector2(width, height),
-      0.35,  // strength
-      0.3,   // radius
-      0.85   // threshold (high -- only bright accents bloom, not the background)
+      0.6,   // strength -- vivid neon glow
+      0.4,   // radius
+      0.4    // threshold -- let bright neons bloom
     );
     composer.addPass(bloomPass);
 
@@ -769,10 +769,10 @@
     raycaster.params.Points = { threshold: 1 };
     mouse = new THREE.Vector2(-9999, -9999);
 
-    // ─── Lighting ───
-    const hemiLight = new THREE.HemisphereLight(0xccddee, 0x667788, 1.2);
+    // ─── Lighting (bright enough to see nodes clearly) ───
+    const hemiLight = new THREE.HemisphereLight(0x6688aa, 0x222244, 1.0);
     scene.add(hemiLight);
-    const ambientLight = new THREE.AmbientLight(0x8899aa, 0.7);
+    const ambientLight = new THREE.AmbientLight(0x445566, 0.5);
     scene.add(ambientLight);
 
     // ─── Background (simple light) ───
@@ -857,7 +857,7 @@
   }
 
   function createBackground() {
-    // Simple light gradient background sphere with gentle slow drift
+    // Deep dark background with slow drifting neon color wash
     const bgGeo = new THREE.SphereGeometry(800, 32, 32);
     const bgMat = new THREE.ShaderMaterial({
       side: THREE.BackSide,
@@ -876,20 +876,40 @@
         uniform float uTime;
         varying vec3 vWorldPos;
 
+        float hash(vec2 p) {
+          return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+        }
+
         void main() {
           vec3 dir = normalize(vWorldPos);
           float y = dir.y * 0.5 + 0.5;
 
-          // Soft vertical gradient: medium steel blue top -> lighter blue-gray bottom
-          vec3 top = vec3(0.22, 0.35, 0.52);
-          vec3 bot = vec3(0.30, 0.42, 0.58);
-          vec3 col = mix(bot, top, smoothstep(0.1, 0.9, y));
+          // Deep dark base gradient
+          vec3 top = vec3(0.04, 0.04, 0.10);
+          vec3 bot = vec3(0.06, 0.04, 0.12);
+          vec3 col = mix(bot, top, smoothstep(0.2, 0.8, y));
 
-          // Very gentle slow-moving color shift
-          float drift = sin(dir.x * 2.0 + uTime * 0.15) * 0.5 + 0.5;
-          float drift2 = cos(dir.z * 1.5 + uTime * 0.1) * 0.5 + 0.5;
-          col += vec3(-0.02, 0.01, 0.03) * drift;
-          col += vec3(0.01, -0.01, 0.02) * drift2;
+          // Slow drifting neon wash -- cyan and magenta
+          float wash1 = sin(dir.x * 1.5 + dir.y * 0.8 + uTime * 0.12) * 0.5 + 0.5;
+          float wash2 = cos(dir.z * 1.2 - dir.y * 0.6 + uTime * 0.08) * 0.5 + 0.5;
+          float wash3 = sin(dir.x * 0.7 + dir.z * 1.1 + uTime * 0.1) * 0.5 + 0.5;
+
+          // Cyan wash
+          col += vec3(0.0, 0.015, 0.025) * wash1 * wash1;
+          // Magenta wash
+          col += vec3(0.02, 0.0, 0.02) * wash2 * wash2;
+          // Blue wash
+          col += vec3(0.0, 0.005, 0.02) * wash3;
+
+          // Faint star specks
+          vec2 starUV = vec2(
+            atan(dir.z, dir.x) / 6.28318 + 0.5,
+            acos(dir.y) / 3.14159
+          ) * 80.0;
+          float starHash = hash(floor(starUV));
+          float starOn = step(0.993, starHash);
+          float starPulse = sin(uTime * (0.4 + hash(floor(starUV) + 50.0) * 1.5)) * 0.5 + 0.5;
+          col += vec3(0.15, 0.20, 0.30) * starOn * (0.5 + starPulse * 0.5);
 
           gl_FragColor = vec4(col, 1.0);
         }
@@ -899,8 +919,30 @@
     bgMesh.userData.isBgSphere = true;
     scene.add(bgMesh);
 
-    // No particle dust in light theme
-    starField = null;
+    // Faint cyan particle motes
+    const dustCount = 200;
+    const dustPos = new Float32Array(dustCount * 3);
+    for (let i = 0; i < dustCount; i++) {
+      const t = Math.random() * Math.PI * 2;
+      const p = Math.acos(2 * Math.random() - 1);
+      const r = 120 + Math.random() * 350;
+      dustPos[i * 3] = r * Math.sin(p) * Math.cos(t);
+      dustPos[i * 3 + 1] = r * Math.sin(p) * Math.sin(t);
+      dustPos[i * 3 + 2] = r * Math.cos(p);
+    }
+    const dustGeo = new THREE.BufferGeometry();
+    dustGeo.setAttribute('position', new THREE.BufferAttribute(dustPos, 3));
+    const dustMat = new THREE.PointsMaterial({
+      color: 0x00ffff,
+      size: 0.6,
+      transparent: true,
+      opacity: 0.2,
+      sizeAttenuation: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    starField = new THREE.Points(dustGeo, dustMat);
+    scene.add(starField);
   }
 
   function buildGraphObjects() {
