@@ -856,177 +856,204 @@
     animate();
   }
 
-  // Floating CRT TVs array for animation
-  let floatingTVs = [];
-
   function createBackground() {
-    // Simple dark navy background sphere
-    const bgGeo = new THREE.SphereGeometry(800, 32, 32);
-    const bgMat = new THREE.MeshBasicMaterial({
-      color: 0x0a1628,
+    // Cyberpunk digital void background sphere
+    const bgGeo = new THREE.SphereGeometry(800, 64, 64);
+    const bgMat = new THREE.ShaderMaterial({
       side: THREE.BackSide,
-    });
-    const bgMesh = new THREE.Mesh(bgGeo, bgMat);
-    scene.add(bgMesh);
-
-    // === FLOATING CRT TV MONITORS ===
-    const TV_COUNT = 45;
-    const tvStaticShader = {
+      uniforms: {
+        uTime: { value: 0.0 },
+      },
       vertexShader: `
+        varying vec3 vWorldPos;
         varying vec2 vUv;
         void main() {
           vUv = uv;
-          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          vec4 worldPos = modelMatrix * vec4(position, 1.0);
+          vWorldPos = worldPos.xyz;
+          gl_Position = projectionMatrix * viewMatrix * worldPos;
         }
       `,
       fragmentShader: `
         uniform float uTime;
-        uniform float uSeed;
-
+        varying vec3 vWorldPos;
         varying vec2 vUv;
 
         float hash(vec2 p) {
-          return fract(sin(dot(p + uSeed, vec2(127.1, 311.7))) * 43758.5453);
+          return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+        }
+
+        float noise(vec2 p) {
+          vec2 i = floor(p);
+          vec2 f = fract(p);
+          f = f * f * (3.0 - 2.0 * f);
+          float a = hash(i);
+          float b = hash(i + vec2(1.0, 0.0));
+          float c = hash(i + vec2(0.0, 1.0));
+          float d = hash(i + vec2(1.0, 1.0));
+          return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+        }
+
+        float fbm(vec2 p) {
+          float v = 0.0, a = 0.5;
+          mat2 rot = mat2(0.8, 0.6, -0.6, 0.8);
+          for (int i = 0; i < 4; i++) {
+            v += a * noise(p);
+            p = rot * p * 2.0;
+            a *= 0.5;
+          }
+          return v;
         }
 
         void main() {
-          vec2 uv = vUv;
+          vec3 dir = normalize(vWorldPos);
+          float theta = atan(dir.z, dir.x);
+          float phi = acos(dir.y);
+          vec2 uv = vec2(theta / 6.28318 + 0.5, phi / 3.14159);
 
-          // Base static noise (fast-changing TV snow)
-          float staticGrain = hash(floor(uv * 180.0) + floor(uTime * 12.0));
+          // === BASE: lighter navy gradient ===
+          vec3 bgTop = vec3(0.08, 0.16, 0.30);     // lighter navy
+          vec3 bgBot = vec3(0.05, 0.10, 0.22);     // medium navy
+          vec3 bgMid = vec3(0.10, 0.18, 0.32);     // brightest band
+          float yFact = dir.y * 0.5 + 0.5;
+          vec3 col = mix(bgBot, bgMid, smoothstep(0.3, 0.5, yFact));
+          col = mix(col, bgTop, smoothstep(0.5, 0.8, yFact));
 
-          // Horizontal scanlines
-          float scanline = sin(uv.y * 400.0) * 0.5 + 0.5;
-          scanline = pow(scanline, 6.0) * 0.15;
+          // === LARGE NEBULA GLOW PATCHES (depth + color) ===
+          float neb1 = fbm(uv * 3.0 + uTime * 0.008);
+          float neb2 = fbm(uv * 4.0 + vec2(5.0, 3.0) - uTime * 0.006);
+          float neb3 = fbm(uv * 2.5 + vec2(9.0, 1.0) + uTime * 0.004);
+          // Cyan nebula
+          col += vec3(0.0, 0.08, 0.14) * pow(neb1, 2.0);
+          // Purple nebula
+          col += vec3(0.08, 0.02, 0.12) * pow(neb2, 2.0);
+          // Deep blue glow
+          col += vec3(0.03, 0.06, 0.12) * pow(neb3, 1.8);
 
-          // Rolling bar (CRT refresh artifact)
-          float roll = fract(uv.y - uTime * 0.08 - uSeed * 0.5);
-          float rollBar = smoothstep(0.0, 0.03, roll) * smoothstep(0.08, 0.05, roll);
+          // === HEX GRID (large, faint, at multiple scales) ===
+          // Scale 1: large hex grid
+          vec2 hex1 = uv * vec2(24.0, 16.0);
+          vec2 hf1 = fract(hex1);
+          float hexLine1 = step(0.94, hf1.x) + step(0.94, hf1.y);
+          // Fade grid by region (not uniform -- more visible in some areas)
+          float hexFade1 = smoothstep(0.3, 0.6, neb1) * 0.5;
+          col += vec3(0.0, 0.04, 0.07) * hexLine1 * hexFade1;
 
-          // Occasional horizontal glitch tear
-          float glitchTime = floor(uTime * 1.5 + uSeed * 10.0);
-          float glitchY = hash(vec2(glitchTime, uSeed + 77.0));
-          float glitchBand = 1.0 - smoothstep(0.0, 0.008, abs(uv.y - glitchY));
-          float glitchOn = step(0.6, hash(vec2(glitchTime, uSeed + 33.0)));
-          float glitchShift = (hash(vec2(uv.y * 50.0, glitchTime)) - 0.5) * 0.1 * glitchBand * glitchOn;
-          float glitchedStatic = hash(floor((uv + vec2(glitchShift, 0.0)) * 180.0) + floor(uTime * 12.0));
+          // Scale 2: smaller detailed grid
+          vec2 hex2 = uv * vec2(60.0, 40.0);
+          vec2 hf2 = fract(hex2);
+          float hexLine2 = step(0.96, hf2.x) + step(0.96, hf2.y);
+          float hexFade2 = smoothstep(0.4, 0.7, neb2) * 0.3;
+          col += vec3(0.0, 0.02, 0.04) * hexLine2 * hexFade2;
 
-          // Mix normal static with glitched
-          float finalStatic = mix(staticGrain, glitchedStatic, glitchBand * glitchOn);
+          // === CIRCUIT TRACE LINES ===
+          // Horizontal traces that pulse
+          for (int i = 0; i < 6; i++) {
+            float fi = float(i);
+            float traceY = hash(vec2(fi, 0.0)) * 0.8 + 0.1;
+            float traceDist = abs(uv.y - traceY);
+            float traceLine = smoothstep(0.002, 0.0, traceDist);
+            // Trace extends partially across (not full width)
+            float traceStart = hash(vec2(fi, 1.0)) * 0.3;
+            float traceEnd = traceStart + 0.2 + hash(vec2(fi, 2.0)) * 0.4;
+            float traceX = smoothstep(traceStart, traceStart + 0.01, uv.x) *
+                           smoothstep(traceEnd, traceEnd - 0.01, uv.x);
+            // Pulse along the trace
+            float pulse = sin(uv.x * 30.0 - uTime * (1.0 + fi * 0.3) + fi * 2.0) * 0.5 + 0.5;
+            pulse = pow(pulse, 4.0);
+            // Bright cyan traces
+            col += vec3(0.0, 0.12, 0.18) * traceLine * traceX * (0.3 + pulse * 0.7);
+            // Node dots at trace endpoints
+            float dotStart = smoothstep(0.006, 0.0, length(uv - vec2(traceStart, traceY)));
+            float dotEnd = smoothstep(0.006, 0.0, length(uv - vec2(traceEnd, traceY)));
+            col += vec3(0.0, 0.15, 0.25) * (dotStart + dotEnd) * 0.5;
+          }
 
-          // Color: mostly grey static with cyan tint
-          vec3 col = vec3(finalStatic * 0.6);
-          col.g += finalStatic * 0.08;
-          col.b += finalStatic * 0.15;
+          // === VERTICAL CIRCUIT BRANCHES ===
+          for (int i = 0; i < 4; i++) {
+            float fi = float(i);
+            float traceX = hash(vec2(fi + 20.0, 5.0)) * 0.8 + 0.1;
+            float traceDist = abs(uv.x - traceX);
+            float traceLine = smoothstep(0.0015, 0.0, traceDist);
+            float traceStart = hash(vec2(fi + 20.0, 6.0)) * 0.3 + 0.1;
+            float traceEnd = traceStart + 0.15 + hash(vec2(fi + 20.0, 7.0)) * 0.3;
+            float traceY = smoothstep(traceStart, traceStart + 0.01, uv.y) *
+                           smoothstep(traceEnd, traceEnd - 0.01, uv.y);
+            float pulse = sin(uv.y * 25.0 - uTime * (0.8 + fi * 0.2) + fi * 3.0) * 0.5 + 0.5;
+            pulse = pow(pulse, 4.0);
+            col += vec3(0.06, 0.0, 0.12) * traceLine * traceY * (0.3 + pulse * 0.7);
+          }
 
-          // Subtract scanlines
+          // === DIGITAL RAIN COLUMNS ===
+          float rainX = floor(uv.x * 50.0);
+          float rainSeed = hash(vec2(rainX, 0.0));
+          float rainActive = step(0.82, rainSeed);
+          float rainSpeed = 0.2 + rainSeed * 0.6;
+          float rainY = fract(uv.y * 2.5 - uTime * rainSpeed);
+          float rainFade = pow(rainY, 2.0) * smoothstep(1.0, 0.3, rainY);
+          float rainDrop = rainActive * rainFade * 0.08;
+          col += vec3(0.0, rainDrop * 0.9, rainDrop);
+          // Bright leading edge
+          float rainHead = smoothstep(0.02, 0.0, rainY) * rainActive;
+          col += vec3(0.0, 0.15, 0.2) * rainHead;
+
+          // === GLITCH BLOCKS (flickering data corruption) ===
+          vec2 blockUV = floor(uv * vec2(80.0, 50.0));
+          float blockSeed = hash(blockUV + floor(uTime * 3.0));
+          float blockOn = step(0.992, blockSeed);
+          // Colored blocks: randomly cyan, purple, or white
+          float blockHue = hash(blockUV + 100.0);
+          vec3 blockCol = blockHue < 0.4 ? vec3(0.0, 0.2, 0.3) :
+                          blockHue < 0.7 ? vec3(0.15, 0.0, 0.2) :
+                                           vec3(0.15, 0.15, 0.2);
+          col += blockCol * blockOn;
+
+          // === SCATTERED BRIGHT POINTS (like distant city lights) ===
+          vec2 lightUV = uv * 120.0;
+          float lightHash = hash(floor(lightUV));
+          float lightOn = step(0.995, lightHash);
+          float lightPulse = sin(uTime * (1.0 + hash(floor(lightUV) + 50.0) * 3.0)) * 0.5 + 0.5;
+          vec3 lightCol = mix(vec3(0.0, 0.3, 0.4), vec3(0.2, 0.1, 0.35),
+                              hash(floor(lightUV) + 70.0));
+          col += lightCol * lightOn * (0.5 + lightPulse * 0.5);
+
+          // === CRT SCANLINES (subtle) ===
+          float scanline = sin(uv.y * 500.0) * 0.5 + 0.5;
+          scanline = pow(scanline, 10.0) * 0.06;
           col -= vec3(scanline);
 
-          // Rolling bar brightens slightly
-          col += vec3(0.02, 0.05, 0.08) * rollBar;
+          // === SOFT VIGNETTE ===
+          vec2 vigUV = uv * 2.0 - 1.0;
+          float vig = 1.0 - dot(vigUV * 0.4, vigUV * 0.4);
+          vig = smoothstep(0.0, 0.7, vig);
+          col *= (0.7 + vig * 0.3);
 
-          // Edge darkening (CRT curvature vignette)
-          vec2 vig = uv * 2.0 - 1.0;
-          float vigFade = 1.0 - pow(length(vig) * 0.7, 2.5);
-          col *= max(vigFade, 0.0);
-
-          // Slight edge color bleed (chromatic aberration at edges)
-          float edgeDist = length(vig);
-          col.r += smoothstep(0.6, 1.0, edgeDist) * 0.04;
-          col.b += smoothstep(0.5, 0.9, edgeDist) * 0.06;
-
-          gl_FragColor = vec4(col, 0.92);
+          gl_FragColor = vec4(col, 1.0);
         }
       `,
-    };
+    });
+    const bgMesh = new THREE.Mesh(bgGeo, bgMat);
+    bgMesh.userData.isBgSphere = true;
+    scene.add(bgMesh);
 
-    for (let i = 0; i < TV_COUNT; i++) {
-      // Random position in a shell around the graph
-      const theta = Math.random() * Math.PI * 2;
-      const phi = Math.acos(2 * Math.random() - 1);
-      const r = 120 + Math.random() * 380;
-      const x = r * Math.sin(phi) * Math.cos(theta);
-      const y = r * Math.sin(phi) * Math.sin(theta);
-      const z = r * Math.cos(phi);
-
-      // Random size (varied TV sizes)
-      const scale = 3 + Math.random() * 12;
-      const aspect = 1.2 + Math.random() * 0.6; // width/height ratio
-
-      // TV group
-      const tvGroup = new THREE.Group();
-      tvGroup.position.set(x, y, z);
-
-      // Random rotation (face roughly toward center with some randomness)
-      tvGroup.lookAt(0, 0, 0);
-      tvGroup.rotateY((Math.random() - 0.5) * 1.2);
-      tvGroup.rotateX((Math.random() - 0.5) * 0.8);
-
-      // TV frame (dark box)
-      const frameDepth = scale * 0.15;
-      const frameGeo = new THREE.BoxGeometry(scale * aspect * 1.12, scale * 1.12, frameDepth);
-      const frameMat = new THREE.MeshStandardMaterial({
-        color: 0x111820,
-        roughness: 0.8,
-        metalness: 0.3,
-      });
-      const frame = new THREE.Mesh(frameGeo, frameMat);
-      tvGroup.add(frame);
-
-      // Screen (front face plane with static shader)
-      const seed = Math.random() * 100;
-      const screenMat = new THREE.ShaderMaterial({
-        uniforms: {
-          uTime: { value: 0.0 },
-          uSeed: { value: seed },
-        },
-        vertexShader: tvStaticShader.vertexShader,
-        fragmentShader: tvStaticShader.fragmentShader,
-        transparent: true,
-      });
-      const screenGeo = new THREE.PlaneGeometry(scale * aspect, scale);
-      const screen = new THREE.Mesh(screenGeo, screenMat);
-      screen.position.z = frameDepth * 0.51; // slightly in front of frame
-      tvGroup.add(screen);
-
-      // Cyan glow light from screen (subtle)
-      const tvLight = new THREE.PointLight(0x00d4ff, 0.15 + Math.random() * 0.2, scale * 6);
-      tvLight.position.z = frameDepth * 0.6;
-      tvGroup.add(tvLight);
-
-      scene.add(tvGroup);
-
-      // Store for animation
-      floatingTVs.push({
-        group: tvGroup,
-        screen: screen,
-        light: tvLight,
-        seed: seed,
-        rotSpeed: (Math.random() - 0.5) * 0.002,
-        bobSpeed: 0.3 + Math.random() * 0.5,
-        bobAmp: 0.3 + Math.random() * 0.6,
-        baseY: y,
-      });
-    }
-
-    // Sparse ambient particles (dust motes) instead of star fields
-    const dustCount = 200;
+    // Cyan particle motes
+    const dustCount = 300;
     const dustPos = new Float32Array(dustCount * 3);
     for (let i = 0; i < dustCount; i++) {
-      const theta = Math.random() * Math.PI * 2;
-      const phi = Math.acos(2 * Math.random() - 1);
+      const t = Math.random() * Math.PI * 2;
+      const p = Math.acos(2 * Math.random() - 1);
       const r = 100 + Math.random() * 400;
-      dustPos[i * 3] = r * Math.sin(phi) * Math.cos(theta);
-      dustPos[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
-      dustPos[i * 3 + 2] = r * Math.cos(phi);
+      dustPos[i * 3] = r * Math.sin(p) * Math.cos(t);
+      dustPos[i * 3 + 1] = r * Math.sin(p) * Math.sin(t);
+      dustPos[i * 3 + 2] = r * Math.cos(p);
     }
     const dustGeo = new THREE.BufferGeometry();
     dustGeo.setAttribute('position', new THREE.BufferAttribute(dustPos, 3));
     const dustMat = new THREE.PointsMaterial({
       color: 0x00d4ff,
-      size: 0.4,
+      size: 0.5,
       transparent: true,
-      opacity: 0.2,
+      opacity: 0.25,
       sizeAttenuation: true,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
@@ -1722,18 +1749,12 @@
     const dt = clock.getDelta();
     const elapsed = clock.getElapsedTime();
 
-    // Update floating CRT TV screens
-    for (let i = 0; i < floatingTVs.length; i++) {
-      const tv = floatingTVs[i];
-      // Update static shader time
-      tv.screen.material.uniforms.uTime.value = elapsed;
-      // Gentle rotation
-      tv.group.rotation.y += tv.rotSpeed;
-      // Gentle bobbing
-      tv.group.position.y = tv.baseY + Math.sin(elapsed * tv.bobSpeed + tv.seed) * tv.bobAmp;
-      // Subtle light flicker
-      tv.light.intensity = (0.15 + Math.sin(elapsed * 3.0 + tv.seed * 10.0) * 0.05) * (0.9 + Math.random() * 0.2);
-    }
+    // Update background shader time
+    scene.traverse(function(obj) {
+      if (obj.userData && obj.userData.isBgSphere && obj.material && obj.material.uniforms) {
+        obj.material.uniforms.uTime.value = elapsed;
+      }
+    });
 
     // Layout animation
     updateLayout(dt);
