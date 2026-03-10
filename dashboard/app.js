@@ -56,7 +56,7 @@
     projectAssoc: 0x00ff88,
     relationship: 0xff6622,
     entityProject:0xffaa00,
-    background:   0x1a3460,
+    background:   0xdce8f4,
   };
 
   // ─── Init ───
@@ -740,7 +740,7 @@
     renderer.setSize(width, height);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.toneMapping = THREE.ReinhardToneMapping;
-    renderer.toneMappingExposure = 1.0;
+    renderer.toneMappingExposure = 1.4;
 
     // ─── Post-processing (softer Bloom) ───
     composer = new THREE.EffectComposer(renderer);
@@ -770,12 +770,12 @@
     mouse = new THREE.Vector2(-9999, -9999);
 
     // ─── Lighting ───
-    const hemiLight = new THREE.HemisphereLight(0x6688cc, 0x334466, 1.0);
+    const hemiLight = new THREE.HemisphereLight(0xffffff, 0xb0c4de, 1.6);
     scene.add(hemiLight);
-    const ambientLight = new THREE.AmbientLight(0x445566, 0.6);
+    const ambientLight = new THREE.AmbientLight(0xe8f0ff, 0.9);
     scene.add(ambientLight);
 
-    // ─── Background (procedural star field + gradient) ───
+    // ─── Background (simple light) ───
     createBackground();
 
     // ─── Build Graph ───
@@ -857,8 +857,8 @@
   }
 
   function createBackground() {
-    // Clean cyberpunk background sphere — gentle nebula + faint hex grid + subtle scanlines
-    const bgGeo = new THREE.SphereGeometry(800, 64, 64);
+    // Simple light gradient background sphere with gentle slow drift
+    const bgGeo = new THREE.SphereGeometry(800, 32, 32);
     const bgMat = new THREE.ShaderMaterial({
       side: THREE.BackSide,
       uniforms: {
@@ -866,9 +866,7 @@
       },
       vertexShader: `
         varying vec3 vWorldPos;
-        varying vec2 vUv;
         void main() {
-          vUv = uv;
           vec4 worldPos = modelMatrix * vec4(position, 1.0);
           vWorldPos = worldPos.xyz;
           gl_Position = projectionMatrix * viewMatrix * worldPos;
@@ -877,83 +875,21 @@
       fragmentShader: `
         uniform float uTime;
         varying vec3 vWorldPos;
-        varying vec2 vUv;
-
-        float hash(vec2 p) {
-          return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
-        }
-
-        float noise(vec2 p) {
-          vec2 i = floor(p);
-          vec2 f = fract(p);
-          f = f * f * (3.0 - 2.0 * f);
-          float a = hash(i);
-          float b = hash(i + vec2(1.0, 0.0));
-          float c = hash(i + vec2(0.0, 1.0));
-          float d = hash(i + vec2(1.0, 1.0));
-          return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
-        }
-
-        float fbm(vec2 p) {
-          float v = 0.0, a = 0.5;
-          mat2 rot = mat2(0.8, 0.6, -0.6, 0.8);
-          for (int i = 0; i < 4; i++) {
-            v += a * noise(p);
-            p = rot * p * 2.0;
-            a *= 0.5;
-          }
-          return v;
-        }
 
         void main() {
           vec3 dir = normalize(vWorldPos);
-          float theta = atan(dir.z, dir.x);
-          float phi = acos(dir.y);
-          vec2 uv = vec2(theta / 6.28318 + 0.5, phi / 3.14159);
+          float y = dir.y * 0.5 + 0.5;
 
-          // === BASE: brighter navy gradient ===
-          vec3 bgTop = vec3(0.14, 0.24, 0.42);
-          vec3 bgBot = vec3(0.10, 0.18, 0.34);
-          vec3 bgMid = vec3(0.16, 0.28, 0.46);
-          float yFact = dir.y * 0.5 + 0.5;
-          vec3 col = mix(bgBot, bgMid, smoothstep(0.3, 0.5, yFact));
-          col = mix(col, bgTop, smoothstep(0.5, 0.8, yFact));
+          // Soft vertical gradient: light steel blue top -> pale blue-white bottom
+          vec3 top = vec3(0.78, 0.85, 0.94);
+          vec3 bot = vec3(0.88, 0.92, 0.97);
+          vec3 col = mix(bot, top, smoothstep(0.1, 0.9, y));
 
-          // === GENTLE NEBULA GLOW ===
-          float neb1 = fbm(uv * 3.0 + uTime * 0.006);
-          float neb2 = fbm(uv * 4.0 + vec2(5.0, 3.0) - uTime * 0.004);
-          float neb3 = fbm(uv * 2.5 + vec2(9.0, 1.0) + uTime * 0.003);
-          // Cyan nebula
-          col += vec3(0.0, 0.06, 0.10) * pow(neb1, 2.0);
-          // Purple nebula
-          col += vec3(0.06, 0.02, 0.09) * pow(neb2, 2.0);
-          // Blue glow
-          col += vec3(0.02, 0.05, 0.09) * pow(neb3, 1.8);
-
-          // === FAINT HEX GRID (single scale, region-faded) ===
-          vec2 hex1 = uv * vec2(24.0, 16.0);
-          vec2 hf1 = fract(hex1);
-          float hexLine1 = step(0.94, hf1.x) + step(0.94, hf1.y);
-          float hexFade1 = smoothstep(0.3, 0.6, neb1) * 0.35;
-          col += vec3(0.0, 0.03, 0.05) * hexLine1 * hexFade1;
-
-          // === SPARSE STAR POINTS ===
-          vec2 starUV = uv * 100.0;
-          float starHash = hash(floor(starUV));
-          float starOn = step(0.994, starHash);
-          float starPulse = sin(uTime * (0.5 + hash(floor(starUV) + 50.0) * 2.0)) * 0.5 + 0.5;
-          col += vec3(0.08, 0.12, 0.18) * starOn * (0.6 + starPulse * 0.4);
-
-          // === VERY SUBTLE SCANLINES ===
-          float scanline = sin(uv.y * 400.0) * 0.5 + 0.5;
-          scanline = pow(scanline, 12.0) * 0.03;
-          col -= vec3(scanline);
-
-          // === MINIMAL VIGNETTE (barely visible) ===
-          vec2 vigUV = uv * 2.0 - 1.0;
-          float vig = 1.0 - dot(vigUV * 0.3, vigUV * 0.3);
-          vig = smoothstep(0.0, 0.8, vig);
-          col *= (0.92 + vig * 0.08);
+          // Very gentle slow-moving color shift
+          float drift = sin(dir.x * 2.0 + uTime * 0.15) * 0.5 + 0.5;
+          float drift2 = cos(dir.z * 1.5 + uTime * 0.1) * 0.5 + 0.5;
+          col += vec3(-0.02, 0.01, 0.03) * drift;
+          col += vec3(0.01, -0.01, 0.02) * drift2;
 
           gl_FragColor = vec4(col, 1.0);
         }
@@ -963,30 +899,8 @@
     bgMesh.userData.isBgSphere = true;
     scene.add(bgMesh);
 
-    // Cyan particle motes
-    const dustCount = 300;
-    const dustPos = new Float32Array(dustCount * 3);
-    for (let i = 0; i < dustCount; i++) {
-      const t = Math.random() * Math.PI * 2;
-      const p = Math.acos(2 * Math.random() - 1);
-      const r = 100 + Math.random() * 400;
-      dustPos[i * 3] = r * Math.sin(p) * Math.cos(t);
-      dustPos[i * 3 + 1] = r * Math.sin(p) * Math.sin(t);
-      dustPos[i * 3 + 2] = r * Math.cos(p);
-    }
-    const dustGeo = new THREE.BufferGeometry();
-    dustGeo.setAttribute('position', new THREE.BufferAttribute(dustPos, 3));
-    const dustMat = new THREE.PointsMaterial({
-      color: 0x00d4ff,
-      size: 0.5,
-      transparent: true,
-      opacity: 0.25,
-      sizeAttenuation: true,
-      depthWrite: false,
-      blending: THREE.AdditiveBlending,
-    });
-    starField = new THREE.Points(dustGeo, dustMat);
-    scene.add(starField);
+    // No particle dust in light theme
+    starField = null;
   }
 
   function buildGraphObjects() {

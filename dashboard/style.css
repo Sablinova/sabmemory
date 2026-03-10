@@ -1,50 +1,50 @@
 @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;600;700;800;900&family=Share+Tech+Mono&family=Rajdhani:wght@300;400;500;600;700&display=swap');
 
 :root {
-  /* Background -- brighter navy blue */
-  --bg: #1a3460;
-  --bg-deep: #1e3a68;
-  --bg-surface: rgba(26, 52, 96, 0.88);
-  --bg-card: rgba(30, 58, 105, 0.85);
-  --bg-hover: rgba(38, 68, 120, 0.7);
-  --bg-glass: rgba(24, 46, 82, 0.75);
+  /* Background -- light airy blue-white */
+  --bg: #e4ecf4;
+  --bg-deep: #dce6f0;
+  --bg-surface: rgba(220, 232, 244, 0.92);
+  --bg-card: rgba(226, 236, 248, 0.90);
+  --bg-hover: rgba(210, 225, 242, 0.8);
+  --bg-glass: rgba(230, 238, 248, 0.82);
 
   /* Borders */
-  --border: rgba(0, 200, 255, 0.15);
-  --border-glow: rgba(0, 200, 255, 0.35);
-  --border-light: rgba(0, 200, 255, 0.5);
+  --border: rgba(0, 140, 200, 0.18);
+  --border-glow: rgba(0, 160, 220, 0.30);
+  --border-light: rgba(0, 160, 220, 0.45);
 
   /* Text */
-  --text: #c8e6ff;
-  --text-muted: #5a8aaa;
-  --text-dim: #3a6080;
+  --text: #1a2a3a;
+  --text-muted: #4a6a8a;
+  --text-dim: #7a96b0;
 
-  /* Accent -- neon cyan */
-  --accent: #00d4ff;
-  --accent-dim: rgba(0, 212, 255, 0.15);
-  --accent-glow: rgba(0, 212, 255, 0.4);
+  /* Accent -- deeper cyan for light bg */
+  --accent: #0099cc;
+  --accent-dim: rgba(0, 153, 204, 0.12);
+  --accent-glow: rgba(0, 153, 204, 0.35);
 
   /* Semantic colors */
-  --green: #00ff88;
-  --green-dim: rgba(0, 255, 136, 0.15);
-  --yellow: #ffaa00;
-  --yellow-dim: rgba(255, 170, 0, 0.15);
-  --red: #ff3355;
-  --red-dim: rgba(255, 51, 85, 0.15);
-  --purple: #aa55ff;
-  --purple-dim: rgba(170, 85, 255, 0.15);
-  --orange: #ff6622;
-  --cyan: #00ffcc;
+  --green: #00b366;
+  --green-dim: rgba(0, 179, 102, 0.12);
+  --yellow: #cc8800;
+  --yellow-dim: rgba(204, 136, 0, 0.12);
+  --red: #dd2244;
+  --red-dim: rgba(221, 34, 68, 0.12);
+  --purple: #7744cc;
+  --purple-dim: rgba(119, 68, 204, 0.12);
+  --orange: #dd5500;
+  --cyan: #00aa99;
 
   /* Node colors */
-  --node-memory: #00d4ff;
-  --node-entity: #aa55ff;
-  --node-project: #00ff88;
+  --node-memory: #0099cc;
+  --node-entity: #7744cc;
+  --node-project: #00b366;
 
-  /* Glow system */
-  --glow-sm: 0 0 8px rgba(0, 212, 255, 0.3);
-  --glow-md: 0 0 16px rgba(0, 212, 255, 0.4);
-  --glow-lg: 0 0 32px rgba(0, 212, 255, 0.3), 0 0 64px rgba(0, 212, 255, 0.1);
+  /* Glow system (subtle on light) */
+  --glow-sm: 0 0 6px rgba(0, 153, 204, 0.2);
+  --glow-md: 0 0 12px rgba(0, 153, 204, 0.25);
+  --glow-lg: 0 0 24px rgba(0, 153, 204, 0.2), 0 0 48px rgba(0, 153, 204, 0.08);
 
   /* Fonts */
   --font-display: 'Orbitron', sans-serif;
@@ -71,7 +71,7 @@ html, body {
 }
 
 ::selection {
-  background: rgba(0, 212, 255, 0.3);
+  background: rgba(0, 153, 204, 0.25);
   color: var(--text);
 }
 
@@ -90,8 +90,8 @@ html, body {
     0deg,
     transparent,
     transparent 2px,
-    rgba(0, 20, 40, 0.06) 2px,
-    rgba(0, 20, 40, 0.06) 4px
+    rgba(0, 40, 80, 0.02) 2px,
+    rgba(0, 40, 80, 0.02) 4px
   );
   mix-blend-mode: overlay;
 }
@@ -103,7 +103,7 @@ body::after {
   inset: 0;
   pointer-events: none;
   z-index: 9998;
-  background: radial-gradient(ellipse at center, transparent 55%, rgba(0, 0, 0, 0.3) 100%);
+  background: radial-gradient(ellipse at center, transparent 60%, rgba(0, 20, 50, 0.08) 100%);
 }
 
 /* ─── Layout ─── */
@@ -246,8 +246,8 @@ nav {
   padding: 0 20px;
   height: 36px;
   align-items: center;
-  background: rgba(10, 25, 50, 0.6);
-  border-bottom: 1px solid rgba(0, 200, 255, 0.08);
+  background: rgba(215, 228, 242, 0.7);
+  border-bottom: 1px solid rgba(0, 140, 200, 0.10);
   flex-shrink: 0;
   overflow-x: auto;
 }
@@ -257,7 +257,7 @@ nav {
   align-items: center;
   gap: 6px;
   padding: 0 16px;
-  border-right: 1px solid rgba(0, 200, 255, 0.08);
+  border-right: 1px solid rgba(0, 140, 200, 0.10);
   white-space: nowrap;
 }
 
@@ -518,7 +518,7 @@ h2 {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(5, 15, 30, 0.7);
+  background: rgba(100, 130, 170, 0.35);
   backdrop-filter: blur(8px);
 }
 .modal[hidden] { display: none; }
@@ -606,7 +606,7 @@ h2 {
   color: var(--text);
   white-space: pre-wrap;
   word-break: break-word;
-  background: rgba(0, 15, 30, 0.4);
+  background: rgba(200, 218, 238, 0.6);
   padding: 12px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -780,7 +780,7 @@ h2 {
   font-weight: 600;
   letter-spacing: 1.5px;
   color: var(--text-muted);
-  background: rgba(15, 34, 64, 0.7);
+  background: rgba(210, 225, 242, 0.8);
   border: 1px solid var(--border);
   padding: 4px 14px;
   cursor: pointer;
