@@ -1,4 +1,4 @@
-// sabmemory // neural interface dashboard
+// sabmemory dashboard
 (function() {
   'use strict';
 
@@ -12,41 +12,52 @@
 
   // Three.js state
   let scene, camera, renderer, composer, controls;
-  let nodeMeshes = [];        // { mesh, data, velocity:{x,y,z}, label, ring }
-  let edgeLines = null;       // THREE.LineSegments (structural)
-  let edgeLabelSprites = [];
+  let nodeMeshes = [];        // { mesh, data, glowSprite, coronaRing, label }
+  let edgeMeshes = [];        // { line, data, curveOff }
+  let memLinkMeshes = [];     // { line, data, curveOff }
   let particles = null;
+  let starField = null;
   let raycaster, mouse;
   let hoveredNode = null;
-  let hoveredEdge = null;     // { edgeData, lineGroup:'structural'|'memlink', drawIdx }
-  let graphNodes = [];        // filtered working copy
+  let hoveredEdge = null;
+  let graphNodes = [];
   let graphEdges = [];
   let graphInitialized = false;
   let clock;
   let frameCount = 0;
   let lastFPSTime = 0;
   let currentFPS = 0;
-  let simAlpha = 1.0;         // simulation cooling
-  let graphMode = '3d';       // '3d' or '2d'
-  let modeTransition = 0;     // 0 = done, >0 = transitioning
-  let adjacency = {};         // nodeId -> { nodes: Set, structEdgeIdx: [], memEdgeIdx: [] }
+  let graphMode = '3d';
+  let adjacency = {};
   let highlightActive = false;
-  let pulsePhase = 0;         // for animated pulse effects
+
+  // Layout state
+  let layoutPhase = 0;        // 0=animating to positions, 1=settled
+  let layoutProgress = 0;     // 0..1 animation progress
+  let targetPositions = [];   // [{x,y,z}] final positions per node
+  let startPositions = [];    // [{x,y,z}] initial random positions
 
   // ─── Constants ───
-  const REPULSION = 600;
-  const STRUCTURAL_SPRING_K = 0.03;
-  const STRUCTURAL_SPRING_LENGTH = 20;
-  const MEMORY_LINK_SPRING_K = 0.001;    // very weak — decorative
-  const MEMORY_LINK_SPRING_LENGTH = 50;
-  const DAMPING = 0.85;
-  const CENTER_GRAVITY = 0.001;
-  const HUB_GRAVITY = 0.0005;            // hubs pulled gently to origin
-  const ALPHA_DECAY = 0.997;
-  const ALPHA_MIN = 0.001;
-  const PARTICLE_COUNT = 600;
-  const HUB_SPREAD = 60;                 // how far apart hubs are placed
-  const CHILD_SPREAD = 18;               // radius for children around hub
+  const GOLDEN_ANGLE = 137.508 * (Math.PI / 180);
+  const NUCLEUS_RADIUS = 55;
+  const SPIRAL_SCALE = 8;
+  const PARTICLE_COUNT = 200;
+  const LAYOUT_DURATION = 2.0; // seconds to animate layout
+
+  // ─── Color Palette ───
+  const COLORS = {
+    memory:       0x818cf8,
+    entity:       0xc084fc,
+    project:      0x34d399,
+    obsolete:     0xf87171,
+    forgotten:    0x475569,
+    memoryLink:   0x818cf8,
+    entityAssoc:  0xc084fc,
+    projectAssoc: 0x34d399,
+    relationship: 0xfb923c,
+    entityProject:0xfbbf24,
+    background:   0x070a0f,
+  };
 
   // ─── Init ───
   document.addEventListener('DOMContentLoaded', async () => {
@@ -366,88 +377,98 @@
   // ═══════════════════════════════════════════════════════════
 
   function nodeColor(d) {
-    if (d.type === 'entity') return 0xaa55ff;
-    if (d.type === 'project') return 0x00ff88;
-    if (d.is_obsolete) return 0xff3355;
-    if (d.is_forgotten) return 0x2a4a5a;
-    return 0x00d4ff;
+    if (d.type === 'entity') return COLORS.entity;
+    if (d.type === 'project') return COLORS.project;
+    if (d.is_obsolete) return COLORS.obsolete;
+    if (d.is_forgotten) return COLORS.forgotten;
+    return COLORS.memory;
   }
 
   function nodeRadius(d) {
     if (d.type === 'entity') return 3.5;
     if (d.type === 'project') return 4.0;
-    return 0.8 + (d.importance || 5) * 0.15;
+    return 1.2 + (d.importance || 5) * 0.18;
   }
 
   function edgeColor(d) {
     const t = d.type || '';
-    if (t === 'entity_assoc') return 0xaa55ff;
-    if (t === 'project_assoc') return 0x00ff88;
-    if (t === 'relationship') return 0xff6622;
-    if (t === 'entity_project') return 0xffaa00;
-    return 0x00d4ff;
+    if (t === 'entity_assoc') return COLORS.entityAssoc;
+    if (t === 'project_assoc') return COLORS.projectAssoc;
+    if (t === 'relationship') return COLORS.relationship;
+    if (t === 'entity_project') return COLORS.entityProject;
+    return COLORS.memoryLink;
   }
 
   function edgeTypeName(t) {
-    if (t === 'entity_assoc') return 'ENTITY LINK';
-    if (t === 'project_assoc') return 'PROJECT LINK';
-    if (t === 'relationship') return 'RELATIONSHIP';
-    if (t === 'entity_project') return 'ENTITY-PROJECT';
-    if (t === 'memory_link') return 'MEMORY LINK';
-    return t.toUpperCase();
+    if (t === 'entity_assoc') return 'Entity Link';
+    if (t === 'project_assoc') return 'Project Link';
+    if (t === 'relationship') return 'Relationship';
+    if (t === 'entity_project') return 'Entity-Project';
+    if (t === 'memory_link') return 'Memory Link';
+    return t;
   }
 
+  // ─── Glow Texture Generation ───
+  function createGlowTexture(color, size) {
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d');
+    const half = size / 2;
+    const gradient = ctx.createRadialGradient(half, half, 0, half, half, half);
+    const c = new THREE.Color(color);
+    const r = Math.round(c.r * 255);
+    const g = Math.round(c.g * 255);
+    const b = Math.round(c.b * 255);
+    gradient.addColorStop(0, `rgba(${r},${g},${b},0.6)`);
+    gradient.addColorStop(0.3, `rgba(${r},${g},${b},0.2)`);
+    gradient.addColorStop(0.7, `rgba(${r},${g},${b},0.05)`);
+    gradient.addColorStop(1, `rgba(${r},${g},${b},0)`);
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, size, size);
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.needsUpdate = true;
+    return tex;
+  }
+
+  // ─── Text Sprite ───
   function createTextSprite(text, color, fontSize) {
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
-    // Render at 2x for sharpness
     const dpr = 2;
-    const sz = (fontSize || 48) * dpr;
-    const pad = 24 * dpr;
-    ctx.font = `bold ${sz}px Orbitron, sans-serif`;
+    const sz = (fontSize || 40) * dpr;
+    const pad = 16 * dpr;
+    ctx.font = `600 ${sz}px Inter, sans-serif`;
     const metrics = ctx.measureText(text);
     const w = Math.ceil(metrics.width) + pad * 2;
     const h = sz + pad * 2;
     canvas.width = w;
     canvas.height = h;
 
-    // Dark background pill for readability
-    ctx.fillStyle = 'rgba(3, 8, 16, 0.7)';
-    const rx = pad * 0.6, ry = pad * 0.6;
-    const rw = w - pad * 1.2, rh = h - pad * 1.2;
+    // Subtle background
+    ctx.fillStyle = 'rgba(7, 10, 15, 0.6)';
+    const rx = pad * 0.4, ry = pad * 0.4;
+    const rw = w - pad * 0.8, rh = h - pad * 0.8;
+    const cr = 8 * dpr;
     ctx.beginPath();
-    ctx.moveTo(rx + 6, ry);
-    ctx.lineTo(rx + rw - 6, ry);
-    ctx.quadraticCurveTo(rx + rw, ry, rx + rw, ry + 6);
-    ctx.lineTo(rx + rw, ry + rh - 6);
-    ctx.quadraticCurveTo(rx + rw, ry + rh, rx + rw - 6, ry + rh);
-    ctx.lineTo(rx + 6, ry + rh);
-    ctx.quadraticCurveTo(rx, ry + rh, rx, ry + rh - 6);
-    ctx.lineTo(rx, ry + 6);
-    ctx.quadraticCurveTo(rx, ry, rx + 6, ry);
+    ctx.moveTo(rx + cr, ry);
+    ctx.lineTo(rx + rw - cr, ry);
+    ctx.quadraticCurveTo(rx + rw, ry, rx + rw, ry + cr);
+    ctx.lineTo(rx + rw, ry + rh - cr);
+    ctx.quadraticCurveTo(rx + rw, ry + rh, rx + rw - cr, ry + rh);
+    ctx.lineTo(rx + cr, ry + rh);
+    ctx.quadraticCurveTo(rx, ry + rh, rx, ry + rh - cr);
+    ctx.lineTo(rx, ry + cr);
+    ctx.quadraticCurveTo(rx, ry, rx + cr, ry);
     ctx.fill();
 
-    // Text with strong glow
-    ctx.font = `bold ${sz}px Orbitron, sans-serif`;
+    // Text
+    ctx.font = `600 ${sz}px Inter, sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-
-    // Outer glow pass
-    ctx.shadowColor = color || '#00d4ff';
-    ctx.shadowBlur = 16 * dpr;
-    ctx.fillStyle = color || '#00d4ff';
-    ctx.fillText(text, w / 2, h / 2);
-
-    // Dark stroke for contrast
-    ctx.shadowBlur = 0;
-    ctx.strokeStyle = 'rgba(3, 8, 16, 0.9)';
-    ctx.lineWidth = 3 * dpr;
-    ctx.strokeText(text, w / 2, h / 2);
-
-    // Crisp fill on top
-    ctx.fillStyle = color || '#00d4ff';
-    ctx.shadowColor = color || '#00d4ff';
+    ctx.shadowColor = 'rgba(0,0,0,0.5)';
     ctx.shadowBlur = 4 * dpr;
+    ctx.fillStyle = color || '#e2e8f0';
     ctx.fillText(text, w / 2, h / 2);
 
     const tex = new THREE.CanvasTexture(canvas);
@@ -455,44 +476,243 @@
     const mat = new THREE.SpriteMaterial({
       map: tex,
       transparent: true,
-      opacity: 0.95,
+      opacity: 0.9,
       depthTest: false,
       sizeAttenuation: true,
     });
     const sprite = new THREE.Sprite(mat);
-    // Scale: divide by dpr*10 so world size is reasonable
     const scaleFactor = dpr * 10;
     sprite.scale.set(w / scaleFactor, h / scaleFactor, 1);
     return sprite;
   }
 
+  // ─── Quadratic Bezier Curve for Edges ───
+  function createBezierEdge(sx, sy, sz, tx, ty, tz, curveOff, color, opacity) {
+    const mx = (sx + tx) / 2;
+    const my = (sy + ty) / 2;
+    const mz = (sz + tz) / 2;
+
+    // Perpendicular offset for curve
+    const dx = tx - sx;
+    const dy = ty - sy;
+    const dz = tz - sz;
+    const len = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
+
+    // Find a perpendicular vector
+    let px, py, pz;
+    if (Math.abs(dx) < Math.abs(dy)) {
+      px = 0; py = -dz; pz = dy;
+    } else {
+      px = -dz; py = 0; pz = dx;
+    }
+    const plen = Math.sqrt(px * px + py * py + pz * pz) || 1;
+    px /= plen; py /= plen; pz /= plen;
+
+    const cx = mx + px * curveOff;
+    const cy = my + py * curveOff;
+    const cz = mz + pz * curveOff;
+
+    const curve = new THREE.QuadraticBezierCurve3(
+      new THREE.Vector3(sx, sy, sz),
+      new THREE.Vector3(cx, cy, cz),
+      new THREE.Vector3(tx, ty, tz)
+    );
+
+    const points = curve.getPoints(20);
+    const geometry = new THREE.BufferGeometry().setFromPoints(points);
+    const material = new THREE.LineBasicMaterial({
+      color: color,
+      transparent: true,
+      opacity: opacity,
+      linewidth: 1,
+    });
+    return new THREE.Line(geometry, material);
+  }
+
+  function updateBezierEdge(line, sx, sy, sz, tx, ty, tz, curveOff) {
+    const mx = (sx + tx) / 2;
+    const my = (sy + ty) / 2;
+    const mz = (sz + tz) / 2;
+
+    const dx = tx - sx;
+    const dy = ty - sy;
+    const dz = tz - sz;
+
+    let px, py, pz;
+    if (Math.abs(dx) < Math.abs(dy)) {
+      px = 0; py = -dz; pz = dy;
+    } else {
+      px = -dz; py = 0; pz = dx;
+    }
+    const plen = Math.sqrt(px * px + py * py + pz * pz) || 1;
+    px /= plen; py /= plen; pz /= plen;
+
+    const cx = mx + px * curveOff;
+    const cy = my + py * curveOff;
+    const cz = mz + pz * curveOff;
+
+    const curve = new THREE.QuadraticBezierCurve3(
+      new THREE.Vector3(sx, sy, sz),
+      new THREE.Vector3(cx, cy, cz),
+      new THREE.Vector3(tx, ty, tz)
+    );
+
+    const points = curve.getPoints(20);
+    const positions = line.geometry.attributes.position;
+    for (let i = 0; i < points.length && i < positions.count; i++) {
+      positions.setXYZ(i, points[i].x, points[i].y, points[i].z);
+    }
+    positions.needsUpdate = true;
+  }
+
+  // ─── Adjacency ───
   function buildAdjacency() {
     adjacency = {};
     graphNodes.forEach(n => {
-      adjacency[n.id] = { nodes: new Set(), structEdgeIdx: [], memEdgeIdx: [] };
+      adjacency[n.id] = { nodes: new Set(), structEdges: [], memEdges: [] };
     });
-    const sEdges = window._structuralEdges || [];
-    sEdges.forEach((e, i) => {
+    edgeMeshes.forEach((em, i) => {
+      const e = em.data;
       if (e._si === undefined || e._ti === undefined) return;
       const sId = graphNodes[e._si].id;
       const tId = graphNodes[e._ti].id;
       adjacency[sId].nodes.add(tId);
       adjacency[tId].nodes.add(sId);
-      adjacency[sId].structEdgeIdx.push(i);
-      adjacency[tId].structEdgeIdx.push(i);
+      adjacency[sId].structEdges.push(i);
+      adjacency[tId].structEdges.push(i);
     });
-    const mEdges = window._memoryLinkEdges || [];
-    mEdges.forEach((e, i) => {
+    memLinkMeshes.forEach((em, i) => {
+      const e = em.data;
       if (e._si === undefined || e._ti === undefined) return;
       const sId = graphNodes[e._si].id;
       const tId = graphNodes[e._ti].id;
       adjacency[sId].nodes.add(tId);
       adjacency[tId].nodes.add(sId);
-      adjacency[sId].memEdgeIdx.push(i);
-      adjacency[tId].memEdgeIdx.push(i);
+      adjacency[sId].memEdges.push(i);
+      adjacency[tId].memEdges.push(i);
     });
   }
 
+  // ─── Orbital Layout ───
+  function computeOrbitalLayout() {
+    const is2D = graphMode === '2d';
+
+    // Identify hubs (entities + projects) and memory nodes
+    const hubs = graphNodes.filter(n => n.type === 'entity' || n.type === 'project');
+    const memoryNodes = graphNodes.filter(n => n.type === 'memory');
+
+    // Build structural edge list for hub-child mapping
+    const structEdges = graphEdges.filter(e => e.type !== 'memory_link');
+
+    // Map memories to parent hubs
+    const idToIdx = {};
+    graphNodes.forEach((n, i) => { idToIdx[n.id] = i; });
+
+    const memoryToHub = {};
+    const hubChildren = {};
+    hubs.forEach(h => { hubChildren[h.id] = []; });
+
+    structEdges.forEach(e => {
+      const si = idToIdx[e.source];
+      const ti = idToIdx[e.target];
+      if (si === undefined || ti === undefined) return;
+      const sNode = graphNodes[si];
+      const tNode = graphNodes[ti];
+
+      if ((sNode.type === 'entity' || sNode.type === 'project') && tNode.type === 'memory') {
+        if (!memoryToHub[tNode.id]) {
+          memoryToHub[tNode.id] = sNode.id;
+          hubChildren[sNode.id].push(tNode.id);
+        }
+      } else if ((tNode.type === 'entity' || tNode.type === 'project') && sNode.type === 'memory') {
+        if (!memoryToHub[sNode.id]) {
+          memoryToHub[sNode.id] = tNode.id;
+          hubChildren[tNode.id].push(sNode.id);
+        }
+      }
+    });
+
+    const orphans = memoryNodes.filter(m => !memoryToHub[m.id]);
+
+    // Position hubs at golden-angle intervals
+    const positions = new Array(graphNodes.length);
+
+    hubs.forEach((h, i) => {
+      const angle = i * GOLDEN_ANGLE;
+      const idx = idToIdx[h.id];
+      if (is2D) {
+        positions[idx] = {
+          x: Math.cos(angle) * NUCLEUS_RADIUS,
+          y: Math.sin(angle) * NUCLEUS_RADIUS,
+          z: 0
+        };
+      } else {
+        positions[idx] = {
+          x: Math.cos(angle) * NUCLEUS_RADIUS,
+          y: (i % 2 === 0 ? 1 : -1) * 12,
+          z: Math.sin(angle) * NUCLEUS_RADIUS
+        };
+      }
+      h._isHub = true;
+    });
+
+    // Position children in Fermat spiral around their hub
+    hubs.forEach(h => {
+      const children = hubChildren[h.id];
+      const hubPos = positions[idToIdx[h.id]];
+
+      children.forEach((cid, ci) => {
+        const idx = idToIdx[cid];
+        if (idx === undefined) return;
+        const angle = ci * GOLDEN_ANGLE;
+        const r = SPIRAL_SCALE * Math.sqrt(ci + 1);
+
+        if (is2D) {
+          positions[idx] = {
+            x: hubPos.x + Math.cos(angle) * r,
+            y: hubPos.y + Math.sin(angle) * r,
+            z: 0
+          };
+        } else {
+          // In 3D, add slight Z variation based on importance
+          const imp = graphNodes[idx].importance || 5;
+          positions[idx] = {
+            x: hubPos.x + Math.cos(angle) * r,
+            y: hubPos.y + Math.sin(angle) * r * 0.8,
+            z: hubPos.z + (imp - 5) * 1.5
+          };
+        }
+      });
+    });
+
+    // Position orphans in Fermat spiral around center
+    orphans.forEach((o, i) => {
+      const idx = idToIdx[o.id];
+      const angle = i * GOLDEN_ANGLE;
+      const r = SPIRAL_SCALE * Math.sqrt(i + 1) * 0.8;
+
+      if (is2D) {
+        positions[idx] = { x: Math.cos(angle) * r, y: Math.sin(angle) * r, z: 0 };
+      } else {
+        positions[idx] = {
+          x: Math.cos(angle) * r,
+          y: Math.sin(angle) * r * 0.8,
+          z: (Math.random() - 0.5) * 8
+        };
+      }
+    });
+
+    // Fill any missing positions (shouldn't happen, but safety)
+    for (let i = 0; i < graphNodes.length; i++) {
+      if (!positions[i]) {
+        positions[i] = { x: (Math.random() - 0.5) * 20, y: (Math.random() - 0.5) * 20, z: is2D ? 0 : (Math.random() - 0.5) * 20 };
+      }
+    }
+
+    return positions;
+  }
+
+  // ─── Init Graph ───
   function initGraph() {
     if (!graphData || !graphData.nodes || !graphData.nodes.length) {
       document.getElementById('graph-container').innerHTML =
@@ -507,8 +727,7 @@
 
     // ─── Scene Setup ───
     scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x030810);
-    scene.fog = new THREE.FogExp2(0x030810, 0.0015);
+    scene.background = new THREE.Color(COLORS.background);
 
     camera = new THREE.PerspectiveCamera(60, width / height, 0.1, 2000);
     camera.position.set(0, 0, 120);
@@ -521,18 +740,16 @@
     renderer.setSize(width, height);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.toneMapping = THREE.ReinhardToneMapping;
-    renderer.toneMappingExposure = 1.2;
+    renderer.toneMappingExposure = 1.0;
 
-    // ─── Post-processing (Bloom) ───
+    // ─── Post-processing (softer Bloom) ───
     composer = new THREE.EffectComposer(renderer);
-    const renderPass = new THREE.RenderPass(scene, camera);
-    composer.addPass(renderPass);
-
+    composer.addPass(new THREE.RenderPass(scene, camera));
     const bloomPass = new THREE.UnrealBloomPass(
       new THREE.Vector2(width, height),
-      0.8,   // strength
-      0.4,   // radius
-      0.5    // threshold
+      0.4,   // strength (was 0.8)
+      0.3,   // radius (was 0.4)
+      0.6    // threshold (was 0.5)
     );
     composer.addPass(bloomPass);
 
@@ -552,15 +769,20 @@
     raycaster.params.Points = { threshold: 1 };
     mouse = new THREE.Vector2(-9999, -9999);
 
-    // ─── Build Graph Data ───
+    // ─── Lighting ───
+    const hemiLight = new THREE.HemisphereLight(0x4466aa, 0x222244, 0.6);
+    scene.add(hemiLight);
+    const ambientLight = new THREE.AmbientLight(0x223344, 0.3);
+    scene.add(ambientLight);
+
+    // ─── Background (procedural star field + gradient) ───
+    createBackground();
+
+    // ─── Build Graph ───
     buildGraphObjects();
 
     // ─── Particles ───
     createParticles();
-
-    // ─── Ambient Light (subtle) ───
-    const ambientLight = new THREE.AmbientLight(0x112233, 0.5);
-    scene.add(ambientLight);
 
     // ─── Event Listeners ───
     const tooltip = document.getElementById('graph-tooltip');
@@ -570,7 +792,6 @@
       mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
       mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
 
-      // Update tooltip position
       const containerRect = container.getBoundingClientRect();
       tooltip.style.left = (e.clientX - containerRect.left + 14) + 'px';
       tooltip.style.top = (e.clientY - containerRect.top - 10) + 'px';
@@ -621,8 +842,7 @@
     const minImpVal = document.getElementById('min-imp-val');
 
     function applyFilters() {
-      const minI = parseInt(minImp.value);
-      minImpVal.textContent = minI;
+      minImpVal.textContent = minImp.value;
       rebuildGraphObjects();
     }
 
@@ -634,6 +854,86 @@
     clock = new THREE.Clock();
     graphInitialized = true;
     animate();
+  }
+
+  function createBackground() {
+    // Gradient background sphere
+    const bgGeo = new THREE.SphereGeometry(800, 32, 32);
+    const bgMat = new THREE.ShaderMaterial({
+      side: THREE.BackSide,
+      uniforms: {
+        color1: { value: new THREE.Color(0x070a0f) },
+        color2: { value: new THREE.Color(0x0d1832) },
+      },
+      vertexShader: `
+        varying vec3 vWorldPos;
+        void main() {
+          vec4 worldPos = modelMatrix * vec4(position, 1.0);
+          vWorldPos = worldPos.xyz;
+          gl_Position = projectionMatrix * viewMatrix * worldPos;
+        }
+      `,
+      fragmentShader: `
+        uniform vec3 color1;
+        uniform vec3 color2;
+        varying vec3 vWorldPos;
+        void main() {
+          float h = normalize(vWorldPos).y * 0.5 + 0.5;
+          gl_FragColor = vec4(mix(color2, color1, h), 1.0);
+        }
+      `,
+    });
+    const bgMesh = new THREE.Mesh(bgGeo, bgMat);
+    scene.add(bgMesh);
+
+    // Star field — layer 1: tiny white stars
+    const starCount1 = 400;
+    const starPos1 = new Float32Array(starCount1 * 3);
+    for (let i = 0; i < starCount1; i++) {
+      const theta = Math.random() * Math.PI * 2;
+      const phi = Math.acos(2 * Math.random() - 1);
+      const r = 300 + Math.random() * 200;
+      starPos1[i * 3] = r * Math.sin(phi) * Math.cos(theta);
+      starPos1[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
+      starPos1[i * 3 + 2] = r * Math.cos(phi);
+    }
+    const starGeo1 = new THREE.BufferGeometry();
+    starGeo1.setAttribute('position', new THREE.BufferAttribute(starPos1, 3));
+    const starMat1 = new THREE.PointsMaterial({
+      color: 0xffffff,
+      size: 0.3,
+      transparent: true,
+      opacity: 0.35,
+      sizeAttenuation: true,
+      depthWrite: false,
+    });
+    const stars1 = new THREE.Points(starGeo1, starMat1);
+    scene.add(stars1);
+
+    // Star field — layer 2: fewer, larger blue-tinted stars
+    const starCount2 = 60;
+    const starPos2 = new Float32Array(starCount2 * 3);
+    for (let i = 0; i < starCount2; i++) {
+      const theta = Math.random() * Math.PI * 2;
+      const phi = Math.acos(2 * Math.random() - 1);
+      const r = 250 + Math.random() * 250;
+      starPos2[i * 3] = r * Math.sin(phi) * Math.cos(theta);
+      starPos2[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
+      starPos2[i * 3 + 2] = r * Math.cos(phi);
+    }
+    const starGeo2 = new THREE.BufferGeometry();
+    starGeo2.setAttribute('position', new THREE.BufferAttribute(starPos2, 3));
+    const starMat2 = new THREE.PointsMaterial({
+      color: 0x8899cc,
+      size: 0.6,
+      transparent: true,
+      opacity: 0.45,
+      sizeAttenuation: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    starField = new THREE.Points(starGeo2, starMat2);
+    scene.add(starField);
   }
 
   function buildGraphObjects() {
@@ -652,20 +952,16 @@
 
     const nodeIdSet = new Set(graphNodes.map(n => n.id));
 
-    // Filter edges — separate structural from memory_links
+    // Filter + classify edges
     const allEdges = graphData.edges.filter(e =>
       nodeIdSet.has(e.source) && nodeIdSet.has(e.target)
     ).map(e => ({ ...e }));
 
-    // Classify edges
-    const structuralEdges = [];  // entity_assoc, project_assoc, relationship, entity_project
-    const memoryLinkEdges = [];  // memory_link (decorative)
+    const structuralEdges = [];
+    const memoryLinkEdges = [];
     allEdges.forEach(e => {
-      if (e.type === 'memory_link') {
-        memoryLinkEdges.push(e);
-      } else {
-        structuralEdges.push(e);
-      }
+      if (e.type === 'memory_link') memoryLinkEdges.push(e);
+      else structuralEdges.push(e);
     });
     graphEdges = allEdges;
 
@@ -673,116 +969,61 @@
     const idToIdx = {};
     graphNodes.forEach((n, i) => { idToIdx[n.id] = i; });
 
-    // ─── Hierarchical Initial Positioning ───
-    // Identify hubs (entities + projects) and their children
-    const hubs = graphNodes.filter(n => n.type === 'entity' || n.type === 'project');
-    const memoryNodes = graphNodes.filter(n => n.type === 'memory');
-
-    // Map each memory to its parent hub(s) via structural edges
-    const memoryToHub = {};  // memoryId -> first hub id
-    const hubChildren = {};  // hubId -> [memoryIds]
-    hubs.forEach(h => { hubChildren[h.id] = []; });
-
-    structuralEdges.forEach(e => {
-      const sNode = graphNodes[idToIdx[e.source]];
-      const tNode = graphNodes[idToIdx[e.target]];
-      if (!sNode || !tNode) return;
-
-      if ((sNode.type === 'entity' || sNode.type === 'project') && tNode.type === 'memory') {
-        if (!memoryToHub[tNode.id]) {
-          memoryToHub[tNode.id] = sNode.id;
-          hubChildren[sNode.id].push(tNode.id);
-        }
-      } else if ((tNode.type === 'entity' || tNode.type === 'project') && sNode.type === 'memory') {
-        if (!memoryToHub[sNode.id]) {
-          memoryToHub[sNode.id] = tNode.id;
-          hubChildren[tNode.id].push(sNode.id);
-        }
-      }
-    });
-
-    // Orphan memories (no hub parent)
-    const orphans = memoryNodes.filter(m => !memoryToHub[m.id]);
-
-    // Position hubs evenly spaced
-    const hubAngleStep = (2 * Math.PI) / Math.max(hubs.length, 1);
-    const layoutIs2D = graphMode === '2d';
-    hubs.forEach((h, i) => {
-      const angle = hubAngleStep * i;
-      h.x = Math.cos(angle) * HUB_SPREAD;
-      h.y = layoutIs2D ? (Math.sin(angle) * HUB_SPREAD) : ((i % 2 === 0 ? 1 : -1) * 10);
-      h.z = layoutIs2D ? 0 : (Math.sin(angle) * HUB_SPREAD);
-      h.vx = 0; h.vy = 0; h.vz = 0;
-      h._isHub = true;
-      h._hubAnchorX = h.x;
-      h._hubAnchorY = h.y;
-      h._hubAnchorZ = h.z;
-    });
-
-    // Position children around their hub
-    hubs.forEach(h => {
-      const children = hubChildren[h.id];
-      const count = children.length;
-      children.forEach((cid, ci) => {
-        const cn = graphNodes[idToIdx[cid]];
-        if (!cn) return;
-        if (layoutIs2D) {
-          // 2D: distribute children in a circle around hub in XY plane
-          const theta = (2 * Math.PI * ci) / Math.max(count, 1);
-          const r = CHILD_SPREAD * (0.6 + Math.random() * 0.4);
-          cn.x = h.x + r * Math.cos(theta);
-          cn.y = h.y + r * Math.sin(theta);
-          cn.z = 0;
-        } else {
-          // 3D: Fibonacci sphere distribution around hub
-          const phi = Math.acos(1 - 2 * (ci + 0.5) / Math.max(count, 1));
-          const theta = Math.PI * (1 + Math.sqrt(5)) * ci;
-          const r = CHILD_SPREAD * (0.6 + Math.random() * 0.4);
-          cn.x = h.x + r * Math.sin(phi) * Math.cos(theta);
-          cn.y = h.y + r * Math.sin(phi) * Math.sin(theta);
-          cn.z = h.z + r * Math.cos(phi);
-        }
-        cn.vx = 0; cn.vy = 0; cn.vz = 0;
-        cn._parentHub = h.id;
-      });
-    });
-
-    // Position orphans in a cluster near the center
-    orphans.forEach((o, i) => {
-      if (layoutIs2D) {
-        const theta = (2 * Math.PI * i) / Math.max(orphans.length, 1);
-        const r = CHILD_SPREAD * 0.8;
-        o.x = r * Math.cos(theta);
-        o.y = r * Math.sin(theta);
-        o.z = 0;
-      } else {
-        const phi = Math.acos(1 - 2 * (i + 0.5) / Math.max(orphans.length, 1));
-        const theta = Math.PI * (1 + Math.sqrt(5)) * i;
-        const r = CHILD_SPREAD * 0.8;
-        o.x = r * Math.sin(phi) * Math.cos(theta);
-        o.y = r * Math.sin(phi) * Math.sin(theta);
-        o.z = r * Math.cos(phi);
-      }
-      o.vx = 0; o.vy = 0; o.vz = 0;
-    });
-
-    // Tag edges with their type category and store index refs
+    // Tag edges with indices
     allEdges.forEach(e => {
       e._si = idToIdx[e.source];
       e._ti = idToIdx[e.target];
-      e._isStructural = (e.type !== 'memory_link');
     });
 
-    // ─── Create Node Meshes ───
-    nodeMeshes.forEach(nm => scene.remove(nm.mesh));
+    // ─── Compute orbital layout ───
+    targetPositions = computeOrbitalLayout();
+
+    // Set random start positions for animation
+    startPositions = graphNodes.map(() => ({
+      x: (Math.random() - 0.5) * 100,
+      y: (Math.random() - 0.5) * 100,
+      z: graphMode === '2d' ? 0 : (Math.random() - 0.5) * 100,
+    }));
+
+    // Set initial positions
+    graphNodes.forEach((n, i) => {
+      n.x = startPositions[i].x;
+      n.y = startPositions[i].y;
+      n.z = startPositions[i].z;
+    });
+
+    layoutPhase = 0;
+    layoutProgress = 0;
+
+    // ─── Clean up old scene objects ───
+    nodeMeshes.forEach(nm => {
+      scene.remove(nm.mesh);
+      if (nm.glowSprite) scene.remove(nm.glowSprite);
+      if (nm.coronaRing) scene.remove(nm.coronaRing);
+      if (nm.label) scene.remove(nm.label);
+    });
     nodeMeshes = [];
 
-    graphNodes.forEach(n => {
+    edgeMeshes.forEach(em => scene.remove(em.line));
+    edgeMeshes = [];
+    memLinkMeshes.forEach(em => scene.remove(em.line));
+    memLinkMeshes = [];
+
+    // ─── Create Node Meshes ───
+    graphNodes.forEach((n, i) => {
       const r = nodeRadius(n);
       const color = nodeColor(n);
-      const geo = new THREE.SphereGeometry(r, 16, 12);
-      const mat = new THREE.MeshBasicMaterial({
+      const isHub = n.type === 'entity' || n.type === 'project';
+      n._isHub = isHub;
+
+      // Orb mesh
+      const geo = new THREE.SphereGeometry(r, 20, 14);
+      const mat = new THREE.MeshStandardMaterial({
         color: color,
+        emissive: color,
+        emissiveIntensity: 0.4,
+        roughness: 0.3,
+        metalness: 0.1,
         transparent: true,
         opacity: (n.is_obsolete || n.is_forgotten) ? 0.35 : 0.9,
       });
@@ -790,153 +1031,91 @@
       mesh.position.set(n.x, n.y, n.z);
       scene.add(mesh);
 
-      // Glow shell
-      const glowGeo = new THREE.SphereGeometry(r * 1.6, 12, 8);
-      const glowMat = new THREE.MeshBasicMaterial({
-        color: color,
+      // Glow sprite
+      const glowTex = createGlowTexture(color, 128);
+      const glowMat = new THREE.SpriteMaterial({
+        map: glowTex,
         transparent: true,
-        opacity: n._isHub ? 0.15 : 0.08,
-        side: THREE.BackSide,
+        opacity: isHub ? 0.25 : 0.18,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        depthTest: false,
       });
-      const glowMesh = new THREE.Mesh(glowGeo, glowMat);
-      mesh.add(glowMesh);
+      const glowSprite = new THREE.Sprite(glowMat);
+      const glowScale = r * 5;
+      glowSprite.scale.set(glowScale, glowScale, 1);
+      glowSprite.position.copy(mesh.position);
+      scene.add(glowSprite);
 
-      nodeMeshes.push({ mesh, data: n, glowMesh, glowMat });
-    });
+      // Corona ring (hubs only)
+      let coronaRing = null;
+      if (isHub) {
+        const ringGeo = new THREE.RingGeometry(r * 1.8, r * 2.3, 32);
+        const ringMat = new THREE.MeshBasicMaterial({
+          color: color,
+          transparent: true,
+          opacity: 0.12,
+          side: THREE.DoubleSide,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+        });
+        coronaRing = new THREE.Mesh(ringGeo, ringMat);
+        coronaRing.position.copy(mesh.position);
+        scene.add(coronaRing);
+      }
 
-    // ─── Create Edges — two layers ───
-    // Clean up old
-    if (edgeLines) scene.remove(edgeLines);
-    if (window._memLinkLines) scene.remove(window._memLinkLines);
-    edgeLines = null;
-    window._memLinkLines = null;
-
-    // Structural edges (prominent)
-    if (structuralEdges.length > 0) {
-      const positions = new Float32Array(structuralEdges.length * 6);
-      const colors = new Float32Array(structuralEdges.length * 6);
-
-      structuralEdges.forEach((e, i) => {
-        if (e._si === undefined || e._ti === undefined) return;
-        const s = graphNodes[e._si];
-        const t = graphNodes[e._ti];
-        const off = i * 6;
-        positions[off]     = s.x; positions[off+1] = s.y; positions[off+2] = s.z;
-        positions[off + 3] = t.x; positions[off+4] = t.y; positions[off+5] = t.z;
-        const c = new THREE.Color(edgeColor(e));
-        colors[off]     = c.r; colors[off+1] = c.g; colors[off+2] = c.b;
-        colors[off + 3] = c.r; colors[off+4] = c.g; colors[off+5] = c.b;
-        e._drawIdx = i;
-      });
-
-      const lineGeo = new THREE.BufferGeometry();
-      lineGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-      lineGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-      const lineMat = new THREE.LineBasicMaterial({
-        vertexColors: true,
-        transparent: true,
-        opacity: 0.85,
-        linewidth: 1,
-      });
-      edgeLines = new THREE.LineSegments(lineGeo, lineMat);
-      scene.add(edgeLines);
-    }
-
-    // Memory link edges (subtle but visible)
-    if (memoryLinkEdges.length > 0) {
-      const positions = new Float32Array(memoryLinkEdges.length * 6);
-      const colors = new Float32Array(memoryLinkEdges.length * 6);
-
-      memoryLinkEdges.forEach((e, i) => {
-        if (e._si === undefined || e._ti === undefined) return;
-        const s = graphNodes[e._si];
-        const t = graphNodes[e._ti];
-        const off = i * 6;
-        positions[off]     = s.x; positions[off+1] = s.y; positions[off+2] = s.z;
-        positions[off + 3] = t.x; positions[off+4] = t.y; positions[off+5] = t.z;
-        // Dim cyan for memory links
-        colors[off]     = 0; colors[off+1] = 0.4; colors[off+2] = 0.6;
-        colors[off + 3] = 0; colors[off+4] = 0.4; colors[off+5] = 0.6;
-        e._drawIdx = i;
-      });
-
-      const lineGeo = new THREE.BufferGeometry();
-      lineGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-      lineGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-      const lineMat = new THREE.LineBasicMaterial({
-        vertexColors: true,
-        transparent: true,
-        opacity: 0.2,
-      });
-      window._memLinkLines = new THREE.LineSegments(lineGeo, lineMat);
-      scene.add(window._memLinkLines);
-    }
-
-    // Store edge lists on module scope for simulation
-    window._structuralEdges = structuralEdges;
-    window._memoryLinkEdges = memoryLinkEdges;
-
-    // Build adjacency map for highlight logic
-    buildAdjacency();
-
-    // ─── Text Labels for Hub Nodes ───
-    edgeLabelSprites.forEach(s => scene.remove(s));
-    edgeLabelSprites = [];
-
-    nodeMeshes.forEach(nm => {
-      const n = nm.data;
-      if (n._isHub) {
-        // Always-visible label for hubs
-        const color = n.type === 'entity' ? '#aa55ff' : '#00ff88';
-        const label = createTextSprite(n.label, color, 46);
-        const r = nodeRadius(n);
-        label.position.set(n.x, n.y + r + 5, n.z);
+      // Labels
+      let label;
+      if (isHub) {
+        const labelColor = n.type === 'entity' ? '#c084fc' : '#34d399';
+        label = createTextSprite(n.label, labelColor, 40);
+        label.position.set(n.x, n.y + r + 4, n.z);
+        label.visible = true;
         scene.add(label);
-        nm.label = label;
-        nm.labelColor = color;
-        edgeLabelSprites.push(label);
       } else {
-        // Create hidden label for memory nodes (shown on hover)
-        const label = createTextSprite(truncate(n.label, 40), '#00d4ff', 42);
-        const r = nodeRadius(n);
-        label.position.set(n.x, n.y + r + 3.5, n.z);
+        label = createTextSprite(truncate(n.label, 40), '#e2e8f0', 36);
+        label.position.set(n.x, n.y + r + 3, n.z);
         label.visible = false;
         scene.add(label);
-        nm.label = label;
-        nm.labelColor = '#00d4ff';
-        edgeLabelSprites.push(label);
       }
 
-      // ─── Importance Ring ───
-      if (n.type === 'memory' && n.importance) {
-        const impNorm = (n.importance || 5) / 10;
-        const ringGeo = new THREE.RingGeometry(
-          nodeRadius(n) * 1.8,
-          nodeRadius(n) * 2.2,
-          24
-        );
-        const hue = impNorm * 0.33; // red(0) -> green(0.33)
-        const ringColor = new THREE.Color().setHSL(hue, 1, 0.5);
-        const ringMat = new THREE.MeshBasicMaterial({
-          color: ringColor,
-          transparent: true,
-          opacity: 0.25 + impNorm * 0.2,
-          side: THREE.DoubleSide,
-        });
-        const ring = new THREE.Mesh(ringGeo, ringMat);
-        ring.lookAt(camera.position);
-        nm.mesh.add(ring);
-        nm.ring = ring;
-        nm.ringMat = ringMat;
-      }
+      nodeMeshes.push({
+        mesh, data: n, glowSprite, glowMat, coronaRing, label,
+        baseGlowOpacity: isHub ? 0.25 : 0.18,
+        _orbitalAngle: Math.random() * Math.PI * 2,
+        _orbitalSpeed: (0.0005 + Math.random() * 0.001) * (Math.random() < 0.5 ? 1 : -1),
+      });
     });
+
+    // ─── Create Bezier Edges ───
+    // Structural edges
+    structuralEdges.forEach(e => {
+      if (e._si === undefined || e._ti === undefined) return;
+      const s = graphNodes[e._si];
+      const t = graphNodes[e._ti];
+      const curveOff = (3 + Math.random() * 5) * (Math.random() < 0.5 ? 1 : -1);
+      const line = createBezierEdge(s.x, s.y, s.z, t.x, t.y, t.z, curveOff, edgeColor(e), 0.4);
+      scene.add(line);
+      edgeMeshes.push({ line, data: e, curveOff });
+    });
+
+    // Memory link edges
+    memoryLinkEdges.forEach(e => {
+      if (e._si === undefined || e._ti === undefined) return;
+      const s = graphNodes[e._si];
+      const t = graphNodes[e._ti];
+      const curveOff = (2 + Math.random() * 4) * (Math.random() < 0.5 ? 1 : -1);
+      const line = createBezierEdge(s.x, s.y, s.z, t.x, t.y, t.z, curveOff, COLORS.memoryLink, 0.12);
+      scene.add(line);
+      memLinkMeshes.push({ line, data: e, curveOff });
+    });
+
+    // Build adjacency
+    buildAdjacency();
 
     // Update HUD
     document.getElementById('hud-nodes').textContent = graphNodes.length;
     document.getElementById('hud-edges').textContent = allEdges.length;
-
-    // Reset simulation
-    simAlpha = 1.0;
   }
 
   function rebuildGraphObjects() {
@@ -946,28 +1125,16 @@
   // ─── Mode Switching ───
   function switchGraphMode(mode) {
     graphMode = mode;
-    modeTransition = 60; // frames to animate transition
-    simAlpha = 0.8;      // reheat simulation for new layout
-
-    // Rebuild graph with new layout positions
     rebuildGraphObjects();
 
     if (mode === '2d') {
-      // Disable 3D rotation, allow only pan/zoom
       controls.enableRotate = false;
-      controls.enablePan = true;
       controls.panSpeed = 1.5;
-
-      // Animate camera to top-down view (looking down Z axis)
       camera.up.set(0, 1, 0);
       animateCameraTo(0, 0, 150);
     } else {
-      // Re-enable full 3D controls
       controls.enableRotate = true;
-      controls.enablePan = true;
       controls.panSpeed = 1.0;
-
-      // Animate camera to perspective view
       animateCameraTo(0, 0, 120);
     }
   }
@@ -1004,13 +1171,14 @@
   function createParticles() {
     if (particles) scene.remove(particles);
 
+    // Ambient dust particles
     const positions = new Float32Array(PARTICLE_COUNT * 3);
     const alphas = new Float32Array(PARTICLE_COUNT);
 
     for (let i = 0; i < PARTICLE_COUNT; i++) {
-      positions[i * 3]     = (Math.random() - 0.5) * 400;
-      positions[i * 3 + 1] = (Math.random() - 0.5) * 400;
-      positions[i * 3 + 2] = (Math.random() - 0.5) * 400;
+      positions[i * 3]     = (Math.random() - 0.5) * 300;
+      positions[i * 3 + 1] = (Math.random() - 0.5) * 300;
+      positions[i * 3 + 2] = (Math.random() - 0.5) * 300;
       alphas[i] = Math.random();
     }
 
@@ -1018,10 +1186,10 @@
     geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
 
     const mat = new THREE.PointsMaterial({
-      color: 0x00d4ff,
-      size: 0.4,
+      color: 0x818cf8,
+      size: 0.3,
       transparent: true,
-      opacity: 0.25,
+      opacity: 0.15,
       sizeAttenuation: true,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
@@ -1032,255 +1200,145 @@
     particles._alphas = alphas;
   }
 
-  // ─── Force Simulation (3D — Hierarchical) ───
-  function simulateForces() {
-    if (simAlpha < ALPHA_MIN) return;
+  // ─── Layout Animation ───
+  function updateLayout(dt) {
+    if (layoutPhase === 1) return; // settled
 
-    const n = graphNodes.length;
+    layoutProgress += dt / LAYOUT_DURATION;
+    if (layoutProgress >= 1.0) {
+      layoutProgress = 1.0;
+      layoutPhase = 1;
+    }
 
-    // Repulsion — all pairs, but hubs repel much more strongly
-    const is2D = graphMode === '2d';
-    for (let i = 0; i < n; i++) {
-      for (let j = i + 1; j < n; j++) {
-        const a = graphNodes[i];
-        const b = graphNodes[j];
-        let dx = a.x - b.x;
-        let dy = a.y - b.y;
-        let dz = is2D ? 0 : (a.z - b.z);
-        let dist2 = dx * dx + dy * dy + dz * dz;
-        if (dist2 < 0.01) {
-          dx = (Math.random() - 0.5) * 0.1;
-          dy = (Math.random() - 0.5) * 0.1;
-          dz = is2D ? 0 : (Math.random() - 0.5) * 0.1;
-          dist2 = dx * dx + dy * dy + dz * dz;
-        }
-        const dist = Math.sqrt(dist2);
-        // Hubs repel each other much more strongly to stay apart
-        const bothHubs = a._isHub && b._isHub;
-        const repMul = bothHubs ? 4.0 : 1.0;
-        const force = REPULSION * repMul * simAlpha / dist2;
-        const fx = dx / dist * force;
-        const fy = dy / dist * force;
-        const fz = is2D ? 0 : (dz / dist * force);
-        // Hubs are "heavy" — they receive less force
-        const aWeight = a._isHub ? 0.1 : 1.0;
-        const bWeight = b._isHub ? 0.1 : 1.0;
-        a.vx += fx * aWeight; a.vy += fy * aWeight; a.vz += fz * aWeight;
-        b.vx -= fx * bWeight; b.vy -= fy * bWeight; b.vz -= fz * bWeight;
+    const t = easeInOutCubic(layoutProgress);
+
+    for (let i = 0; i < graphNodes.length; i++) {
+      const n = graphNodes[i];
+      n.x = startPositions[i].x + (targetPositions[i].x - startPositions[i].x) * t;
+      n.y = startPositions[i].y + (targetPositions[i].y - startPositions[i].y) * t;
+      n.z = startPositions[i].z + (targetPositions[i].z - startPositions[i].z) * t;
+    }
+  }
+
+  // ─── Orbital Motion (post-layout) ───
+  function updateOrbitalMotion(dt) {
+    if (layoutPhase !== 1) return; // only after settled
+
+    for (let i = 0; i < nodeMeshes.length; i++) {
+      const nm = nodeMeshes[i];
+      if (nm.data._isHub) continue; // hubs stay still
+
+      nm._orbitalAngle += nm._orbitalSpeed;
+      const target = targetPositions[i];
+      // Very subtle orbital wobble
+      const wobble = 0.5;
+      nm.data.x = target.x + Math.cos(nm._orbitalAngle) * wobble;
+      nm.data.y = target.y + Math.sin(nm._orbitalAngle) * wobble;
+      if (graphMode !== '2d') {
+        nm.data.z = target.z + Math.sin(nm._orbitalAngle * 0.7) * wobble * 0.5;
       }
     }
-
-    // Structural spring forces (strong — these define the tree)
-    const sEdges = window._structuralEdges || [];
-    for (let i = 0; i < sEdges.length; i++) {
-      const e = sEdges[i];
-      if (e._si === undefined || e._ti === undefined) continue;
-      const a = graphNodes[e._si];
-      const b = graphNodes[e._ti];
-      let dx = b.x - a.x;
-      let dy = b.y - a.y;
-      let dz = is2D ? 0 : (b.z - a.z);
-      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz) || 0.01;
-      const displacement = dist - STRUCTURAL_SPRING_LENGTH;
-      const force = STRUCTURAL_SPRING_K * displacement * simAlpha;
-      const fx = dx / dist * force;
-      const fy = dy / dist * force;
-      const fz = is2D ? 0 : (dz / dist * force);
-      const aWeight = a._isHub ? 0.05 : 1.0;
-      const bWeight = b._isHub ? 0.05 : 1.0;
-      a.vx += fx * aWeight; a.vy += fy * aWeight; a.vz += fz * aWeight;
-      b.vx -= fx * bWeight; b.vy -= fy * bWeight; b.vz -= fz * bWeight;
-    }
-
-    // Memory link spring forces (very weak — just gentle clustering)
-    const mEdges = window._memoryLinkEdges || [];
-    for (let i = 0; i < mEdges.length; i++) {
-      const e = mEdges[i];
-      if (e._si === undefined || e._ti === undefined) continue;
-      const a = graphNodes[e._si];
-      const b = graphNodes[e._ti];
-      let dx = b.x - a.x;
-      let dy = b.y - a.y;
-      let dz = is2D ? 0 : (b.z - a.z);
-      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz) || 0.01;
-      const displacement = dist - MEMORY_LINK_SPRING_LENGTH;
-      const force = MEMORY_LINK_SPRING_K * displacement * simAlpha;
-      const fx = dx / dist * force;
-      const fy = dy / dist * force;
-      const fz = is2D ? 0 : (dz / dist * force);
-      a.vx += fx; a.vy += fy; a.vz += fz;
-      b.vx -= fx; b.vy -= fy; b.vz -= fz;
-    }
-
-    // Hub anchor gravity — hubs gently pulled back to their initial positions
-    for (let i = 0; i < n; i++) {
-      const nd = graphNodes[i];
-      if (nd._isHub) {
-        nd.vx += (nd._hubAnchorX - nd.x) * 0.01 * simAlpha;
-        nd.vy += (nd._hubAnchorY - nd.y) * 0.01 * simAlpha;
-        if (!is2D) {
-          nd.vz += (nd._hubAnchorZ - nd.z) * 0.01 * simAlpha;
-        }
-      } else {
-        // Regular center gravity for non-hubs (weak)
-        nd.vx -= nd.x * CENTER_GRAVITY * simAlpha;
-        nd.vy -= nd.y * CENTER_GRAVITY * simAlpha;
-        if (!is2D) {
-          nd.vz -= nd.z * CENTER_GRAVITY * simAlpha;
-        }
-      }
-    }
-
-    // Apply velocity + damping
-    for (let i = 0; i < n; i++) {
-      const nd = graphNodes[i];
-      nd.vx *= DAMPING;
-      nd.vy *= DAMPING;
-      nd.vz *= DAMPING;
-
-      // In 2D mode, kill Z velocity and flatten Z positions
-      if (graphMode === '2d') {
-        nd.vz = 0;
-        if (modeTransition > 0) {
-          // Smoothly lerp Z toward 0 during transition
-          nd.z *= 0.9;
-        } else {
-          nd.z = 0;
-        }
-      }
-
-      nd.x += nd.vx;
-      nd.y += nd.vy;
-      nd.z += nd.vz;
-    }
-
-    simAlpha *= ALPHA_DECAY;
   }
 
   function updatePositions() {
-    // Update node meshes + labels
+    // Update node meshes + labels + glows + coronas
     for (let i = 0; i < nodeMeshes.length; i++) {
       const nm = nodeMeshes[i];
-      nm.mesh.position.set(nm.data.x, nm.data.y, nm.data.z);
+      const n = nm.data;
+      nm.mesh.position.set(n.x, n.y, n.z);
+      nm.glowSprite.position.set(n.x, n.y, n.z);
+      if (nm.coronaRing) {
+        nm.coronaRing.position.set(n.x, n.y, n.z);
+        nm.coronaRing.lookAt(camera.position);
+      }
       if (nm.label) {
-        const r = nodeRadius(nm.data);
-        const yOff = nm.data._isHub ? r + 3 : r + 2;
-        nm.label.position.set(nm.data.x, nm.data.y + yOff, nm.data.z);
-      }
-      // Make importance rings face camera
-      if (nm.ring) {
-        nm.ring.lookAt(
-          camera.position.x - nm.mesh.position.x,
-          camera.position.y - nm.mesh.position.y,
-          camera.position.z - nm.mesh.position.z
-        );
+        const r = nodeRadius(n);
+        const yOff = n._isHub ? r + 4 : r + 3;
+        nm.label.position.set(n.x, n.y + yOff, n.z);
       }
     }
 
-    // Update structural edge lines
-    const sEdges = window._structuralEdges || [];
-    if (edgeLines && sEdges.length > 0) {
-      const pos = edgeLines.geometry.attributes.position.array;
-      for (let i = 0; i < sEdges.length; i++) {
-        const e = sEdges[i];
-        if (e._si === undefined || e._ti === undefined) continue;
-        const s = graphNodes[e._si];
-        const t = graphNodes[e._ti];
-        const off = i * 6;
-        pos[off]     = s.x; pos[off+1] = s.y; pos[off+2] = s.z;
-        pos[off + 3] = t.x; pos[off+4] = t.y; pos[off+5] = t.z;
+    // Update Bezier edges
+    edgeMeshes.forEach(em => {
+      const e = em.data;
+      if (e._si === undefined || e._ti === undefined) return;
+      const s = graphNodes[e._si];
+      const t = graphNodes[e._ti];
+      updateBezierEdge(em.line, s.x, s.y, s.z, t.x, t.y, t.z, em.curveOff);
+    });
+
+    memLinkMeshes.forEach(em => {
+      const e = em.data;
+      if (e._si === undefined || e._ti === undefined) return;
+      const s = graphNodes[e._si];
+      const t = graphNodes[e._ti];
+      updateBezierEdge(em.line, s.x, s.y, s.z, t.x, t.y, t.z, em.curveOff);
+    });
+  }
+
+  function updateAnimations(elapsed) {
+    // Glow pulsing
+    for (let i = 0; i < nodeMeshes.length; i++) {
+      const nm = nodeMeshes[i];
+      if (!highlightActive || hoveredNode === nm) {
+        const pulse = nm.baseGlowOpacity + Math.sin(elapsed * 1.5 + i * 0.5) * 0.05;
+        nm.glowMat.opacity = Math.max(0.05, pulse);
       }
-      edgeLines.geometry.attributes.position.needsUpdate = true;
     }
 
-    // Update memory link lines
-    const mEdges = window._memoryLinkEdges || [];
-    if (window._memLinkLines && mEdges.length > 0) {
-      const pos = window._memLinkLines.geometry.attributes.position.array;
-      for (let i = 0; i < mEdges.length; i++) {
-        const e = mEdges[i];
-        if (e._si === undefined || e._ti === undefined) continue;
-        const s = graphNodes[e._si];
-        const t = graphNodes[e._ti];
-        const off = i * 6;
-        pos[off]     = s.x; pos[off+1] = s.y; pos[off+2] = s.z;
-        pos[off + 3] = t.x; pos[off+4] = t.y; pos[off+5] = t.z;
+    // Corona rotation
+    for (let i = 0; i < nodeMeshes.length; i++) {
+      const nm = nodeMeshes[i];
+      if (nm.coronaRing) {
+        nm.coronaRing.rotation.z += 0.003;
       }
-      window._memLinkLines.geometry.attributes.position.needsUpdate = true;
+    }
+
+    // Star twinkle
+    if (starField) {
+      starField.material.opacity = 0.35 + Math.sin(elapsed * 0.5) * 0.1;
     }
   }
 
-  function updateParticles(dt) {
+  function updateParticles(elapsed) {
     if (!particles) return;
     const pos = particles.geometry.attributes.position.array;
     const alphas = particles._alphas;
     for (let i = 0; i < PARTICLE_COUNT; i++) {
       const i3 = i * 3;
-      // Gentle drift
-      pos[i3]     += Math.sin(alphas[i] * 6.28 + dt * 0.5) * 0.02;
-      pos[i3 + 1] += Math.cos(alphas[i] * 3.14 + dt * 0.3) * 0.02;
-      pos[i3 + 2] += Math.sin(alphas[i] * 4.71 + dt * 0.4) * 0.015;
-      alphas[i] += 0.001;
+      pos[i3]     += Math.sin(alphas[i] * 6.28 + elapsed * 0.2) * 0.008;
+      pos[i3 + 1] += Math.cos(alphas[i] * 3.14 + elapsed * 0.15) * 0.008;
+      pos[i3 + 2] += Math.sin(alphas[i] * 4.71 + elapsed * 0.18) * 0.006;
+      alphas[i] += 0.0005;
     }
     particles.geometry.attributes.position.needsUpdate = true;
-    particles.rotation.y += 0.0001;
   }
 
-  function pointToSegmentDist(px, py, pz, ax, ay, az, bx, by, bz) {
-    const dx = bx - ax, dy = by - ay, dz = bz - az;
-    const len2 = dx * dx + dy * dy + dz * dz;
-    if (len2 < 0.0001) return Math.sqrt((px-ax)*(px-ax)+(py-ay)*(py-ay)+(pz-az)*(pz-az));
-    let t = ((px-ax)*dx + (py-ay)*dy + (pz-az)*dz) / len2;
-    t = Math.max(0, Math.min(1, t));
-    const cx = ax + t * dx, cy = ay + t * dy, cz = az + t * dz;
-    return Math.sqrt((px-cx)*(px-cx)+(py-cy)*(py-cy)+(pz-cz)*(pz-cz));
-  }
-
+  // ─── Highlight Logic ───
   function clearHighlights() {
     if (!highlightActive) return;
     highlightActive = false;
     hoveredEdge = null;
 
-    // Restore all node opacities and reset scale
     nodeMeshes.forEach(nm => {
       const isObs = nm.data.is_obsolete || nm.data.is_forgotten;
       nm.mesh.material.opacity = isObs ? 0.35 : 0.9;
+      nm.mesh.material.emissiveIntensity = 0.4;
       nm.mesh.scale.set(1, 1, 1);
-      nm.glowMat.opacity = nm.data._isHub ? 0.15 : 0.08;
+      nm.glowMat.opacity = nm.baseGlowOpacity;
       if (nm.label && !nm.data._isHub) nm.label.visible = false;
       if (nm.label && nm.data._isHub) nm.label.material.opacity = 0.9;
     });
 
-    // Restore edge opacities
-    if (edgeLines) edgeLines.material.opacity = 0.85;
-    if (window._memLinkLines) window._memLinkLines.material.opacity = 0.2;
+    edgeMeshes.forEach(em => {
+      em.line.material.opacity = 0.4;
+      em.line.material.color.set(edgeColor(em.data));
+    });
+    memLinkMeshes.forEach(em => {
+      em.line.material.opacity = 0.12;
+      em.line.material.color.set(COLORS.memoryLink);
+    });
 
-    // Restore structural edge colors
-    if (edgeLines) {
-      const sEdges = window._structuralEdges || [];
-      const colors = edgeLines.geometry.attributes.color.array;
-      sEdges.forEach((e, i) => {
-        const c = new THREE.Color(edgeColor(e));
-        const off = i * 6;
-        colors[off] = c.r; colors[off+1] = c.g; colors[off+2] = c.b;
-        colors[off+3] = c.r; colors[off+4] = c.g; colors[off+5] = c.b;
-      });
-      edgeLines.geometry.attributes.color.needsUpdate = true;
-    }
-
-    // Restore memory link edge colors
-    if (window._memLinkLines) {
-      const mEdges = window._memoryLinkEdges || [];
-      const colors = window._memLinkLines.geometry.attributes.color.array;
-      mEdges.forEach((e, i) => {
-        const off = i * 6;
-        colors[off] = 0; colors[off+1] = 0.4; colors[off+2] = 0.6;
-        colors[off+3] = 0; colors[off+4] = 0.4; colors[off+5] = 0.6;
-      });
-      window._memLinkLines.geometry.attributes.color.needsUpdate = true;
-    }
-
-    // Hide info panel
     const infoPanel = document.getElementById('graph-info-panel');
     if (infoPanel) infoPanel.classList.remove('visible');
   }
@@ -1292,22 +1350,24 @@
     if (!adj) return;
 
     const connectedNodes = adj.nodes;
+    const connectedStructEdges = new Set(adj.structEdges);
+    const connectedMemEdges = new Set(adj.memEdges);
 
     // Dim all nodes, brighten connected ones
     nodeMeshes.forEach(other => {
       if (other === nm) {
-        // Hovered node — bright + pulsing glow
         other.mesh.material.opacity = 1.0;
-        other.glowMat.opacity = 0.4;
+        other.mesh.material.emissiveIntensity = 0.8;
+        other.glowMat.opacity = 0.5;
         if (other.label) { other.label.visible = true; other.label.material.opacity = 1.0; }
       } else if (connectedNodes.has(other.data.id)) {
-        // Connected neighbor — bright
-        other.mesh.material.opacity = 0.9;
-        other.glowMat.opacity = 0.2;
+        other.mesh.material.opacity = 0.85;
+        other.mesh.material.emissiveIntensity = 0.5;
+        other.glowMat.opacity = 0.25;
         if (other.label) { other.label.visible = true; other.label.material.opacity = 0.8; }
       } else {
-        // Unrelated — dim
-        other.mesh.material.opacity = 0.08;
+        other.mesh.material.opacity = 0.06;
+        other.mesh.material.emissiveIntensity = 0.1;
         other.glowMat.opacity = 0.02;
         if (other.label && !other.data._isHub) other.label.visible = false;
         if (other.label && other.data._isHub) other.label.material.opacity = 0.15;
@@ -1315,112 +1375,75 @@
     });
 
     // Dim all edges, brighten connected ones
-    const sEdges = window._structuralEdges || [];
-    const mEdges = window._memoryLinkEdges || [];
+    edgeMeshes.forEach((em, i) => {
+      if (connectedStructEdges.has(i)) {
+        em.line.material.opacity = 0.7;
+        const c = new THREE.Color(edgeColor(em.data));
+        c.lerp(new THREE.Color(0xffffff), 0.3);
+        em.line.material.color.copy(c);
+      } else {
+        em.line.material.opacity = 0.03;
+        em.line.material.color.set(0x111522);
+      }
+    });
 
-    // Structural edges
-    if (edgeLines) {
-      edgeLines.material.opacity = 0.85;
-      const colors = edgeLines.geometry.attributes.color.array;
-      const connectedStructIdx = new Set(adj.structEdgeIdx);
-      sEdges.forEach((e, i) => {
-        const off = i * 6;
-        if (connectedStructIdx.has(i)) {
-          // Connected — bright white-ish glow
-          const c = new THREE.Color(edgeColor(e));
-          c.lerp(new THREE.Color(0xffffff), 0.4);
-          colors[off] = c.r; colors[off+1] = c.g; colors[off+2] = c.b;
-          colors[off+3] = c.r; colors[off+4] = c.g; colors[off+5] = c.b;
-        } else {
-          // Not connected — very dim
-          colors[off] = 0.03; colors[off+1] = 0.05; colors[off+2] = 0.08;
-          colors[off+3] = 0.03; colors[off+4] = 0.05; colors[off+5] = 0.08;
-        }
-      });
-      edgeLines.geometry.attributes.color.needsUpdate = true;
-    }
+    memLinkMeshes.forEach((em, i) => {
+      if (connectedMemEdges.has(i)) {
+        em.line.material.opacity = 0.35;
+        em.line.material.color.set(0x818cf8);
+      } else {
+        em.line.material.opacity = 0.02;
+        em.line.material.color.set(0x111522);
+      }
+    });
 
-    // Memory link edges
-    if (window._memLinkLines) {
-      window._memLinkLines.material.opacity = 0.35;
-      const colors = window._memLinkLines.geometry.attributes.color.array;
-      const connectedMemIdx = new Set(adj.memEdgeIdx);
-      mEdges.forEach((e, i) => {
-        const off = i * 6;
-        if (connectedMemIdx.has(i)) {
-          colors[off] = 0; colors[off+1] = 0.7; colors[off+2] = 1.0;
-          colors[off+3] = 0; colors[off+4] = 0.7; colors[off+5] = 1.0;
-        } else {
-          colors[off] = 0.02; colors[off+1] = 0.04; colors[off+2] = 0.06;
-          colors[off+3] = 0.02; colors[off+4] = 0.04; colors[off+5] = 0.06;
-        }
-      });
-      window._memLinkLines.geometry.attributes.color.needsUpdate = true;
-    }
-
-    // Update info panel
     updateInfoPanel(nm.data, connectedNodes);
   }
 
-  function highlightEdgeByIndex(edgeData, group, drawIdx) {
+  function highlightEdge(edgeData, edgeMesh, group) {
     highlightActive = true;
-    hoveredEdge = { edgeData, group, drawIdx };
+    hoveredEdge = { edgeData, edgeMesh, group };
 
     const si = edgeData._si;
     const ti = edgeData._ti;
     if (si === undefined || ti === undefined) return;
 
-    const srcNode = graphNodes[si];
-    const tgtNode = graphNodes[ti];
-    const endpointIds = new Set([srcNode.id, tgtNode.id]);
+    const endpointIds = new Set([graphNodes[si].id, graphNodes[ti].id]);
 
-    // Dim all nodes except endpoints
     nodeMeshes.forEach(nm => {
       if (endpointIds.has(nm.data.id)) {
         nm.mesh.material.opacity = 1.0;
-        nm.glowMat.opacity = 0.3;
+        nm.mesh.material.emissiveIntensity = 0.7;
+        nm.glowMat.opacity = 0.4;
         if (nm.label) { nm.label.visible = true; nm.label.material.opacity = 1.0; }
       } else {
-        nm.mesh.material.opacity = 0.08;
+        nm.mesh.material.opacity = 0.06;
+        nm.mesh.material.emissiveIntensity = 0.1;
         nm.glowMat.opacity = 0.02;
         if (nm.label && !nm.data._isHub) nm.label.visible = false;
         if (nm.label && nm.data._isHub) nm.label.material.opacity = 0.15;
       }
     });
 
-    // Dim all edges except the hovered one
-    const sEdges = window._structuralEdges || [];
-    const mEdges = window._memoryLinkEdges || [];
+    edgeMeshes.forEach(em => {
+      if (em === edgeMesh) {
+        em.line.material.opacity = 0.9;
+        em.line.material.color.set(0xffffff);
+      } else {
+        em.line.material.opacity = 0.03;
+        em.line.material.color.set(0x111522);
+      }
+    });
 
-    if (edgeLines) {
-      const colors = edgeLines.geometry.attributes.color.array;
-      sEdges.forEach((e, i) => {
-        const off = i * 6;
-        if (group === 'structural' && i === drawIdx) {
-          colors[off] = 1; colors[off+1] = 1; colors[off+2] = 1;
-          colors[off+3] = 1; colors[off+4] = 1; colors[off+5] = 1;
-        } else {
-          colors[off] = 0.03; colors[off+1] = 0.05; colors[off+2] = 0.08;
-          colors[off+3] = 0.03; colors[off+4] = 0.05; colors[off+5] = 0.08;
-        }
-      });
-      edgeLines.geometry.attributes.color.needsUpdate = true;
-    }
-
-    if (window._memLinkLines) {
-      const colors = window._memLinkLines.geometry.attributes.color.array;
-      mEdges.forEach((e, i) => {
-        const off = i * 6;
-        if (group === 'memlink' && i === drawIdx) {
-          colors[off] = 0; colors[off+1] = 1; colors[off+2] = 1;
-          colors[off+3] = 0; colors[off+4] = 1; colors[off+5] = 1;
-        } else {
-          colors[off] = 0.02; colors[off+1] = 0.04; colors[off+2] = 0.06;
-          colors[off+3] = 0.02; colors[off+4] = 0.04; colors[off+5] = 0.06;
-        }
-      });
-      window._memLinkLines.geometry.attributes.color.needsUpdate = true;
-    }
+    memLinkMeshes.forEach(em => {
+      if (em === edgeMesh) {
+        em.line.material.opacity = 0.8;
+        em.line.material.color.set(0xffffff);
+      } else {
+        em.line.material.opacity = 0.02;
+        em.line.material.color.set(0x111522);
+      }
+    });
   }
 
   function updateInfoPanel(nodeData, connectedNodeIds) {
@@ -1433,7 +1456,6 @@
       if (n) neighbors.push(n);
     });
 
-    // Sort: hubs first, then by importance
     neighbors.sort((a, b) => {
       if (a._isHub && !b._isHub) return -1;
       if (!a._isHub && b._isHub) return 1;
@@ -1441,7 +1463,7 @@
     });
 
     const colorMap = { entity: 'var(--purple)', project: 'var(--green)', memory: 'var(--accent)' };
-    const typeIcon = { entity: '&#9650;', project: '&#9679;', memory: '&#9632;' };
+    const typeIcon = { entity: '\u25B2', project: '\u25CF', memory: '\u25A0' };
 
     let html = `<div class="info-header">
       <span class="info-type" style="color:${colorMap[nodeData.type] || 'var(--accent)'}">${typeIcon[nodeData.type] || ''} ${(nodeData.type || '').toUpperCase()}</span>
@@ -1452,7 +1474,7 @@
       html += `<div class="info-importance"><span class="imp-bar" style="width:${nodeData.importance * 10}%"></span><span class="imp-text">IMP ${nodeData.importance}/10</span></div>`;
     }
 
-    html += `<div class="info-connections-header">${neighbors.length} CONNECTION${neighbors.length !== 1 ? 'S' : ''}</div>`;
+    html += `<div class="info-connections-header">${neighbors.length} connection${neighbors.length !== 1 ? 's' : ''}</div>`;
     html += '<div class="info-connections">';
     neighbors.slice(0, 12).forEach(n => {
       const c = colorMap[n.type] || 'var(--accent)';
@@ -1472,6 +1494,7 @@
     panel.classList.add('visible');
   }
 
+  // ─── Raycasting ───
   function doRaycast() {
     if (!raycaster || mouse.x < -5) return;
 
@@ -1482,7 +1505,7 @@
     const tooltip = document.getElementById('graph-tooltip');
     const canvas = document.getElementById('graph-canvas');
 
-    // ── Check node hover first ──
+    // Check node hover
     if (intersects.length > 0) {
       const hit = intersects[0].object;
       const nm = nodeMeshes.find(nm => nm.mesh === hit);
@@ -1493,10 +1516,8 @@
           hoveredEdge = null;
           canvas.style.cursor = nm.data.type === 'memory' ? 'pointer' : 'default';
 
-          // Highlight this node + connections
           highlightNode(nm);
 
-          // Update tooltip
           const d = nm.data;
           let html = `<div class="tt-title">${esc(d.label)}</div>`;
           html += `<div class="tt-type">${d.type}${d.entity_type ? ' / ' + d.entity_type : ''}${d.memory_type ? ' / ' + d.memory_type : ''}</div>`;
@@ -1514,37 +1535,30 @@
       }
     }
 
-    // ── Check edge hover (line proximity) ──
+    // Check edge hover (proximity to Bezier curves)
     const ray = raycaster.ray;
     const threshold = graphMode === '2d' ? 2.5 : 1.8;
-    let closestEdge = null;
+    let closestEdgeMesh = null;
     let closestDist = threshold;
     let closestGroup = null;
-    let closestIdx = -1;
 
-    // Project mouse to a world point on the near plane for distance calcs
-    const sEdges = window._structuralEdges || [];
-    const mEdges = window._memoryLinkEdges || [];
-
-    function checkEdges(edges, group) {
+    function checkEdgeGroup(edges, group) {
       for (let i = 0; i < edges.length; i++) {
-        const e = edges[i];
+        const em = edges[i];
+        const e = em.data;
         if (e._si === undefined || e._ti === undefined) continue;
         const s = graphNodes[e._si];
         const t = graphNodes[e._ti];
 
-        // Project endpoints to screen and find closest point on line segment
         const sv = new THREE.Vector3(s.x, s.y, s.z);
         const tv = new THREE.Vector3(t.x, t.y, t.z);
         const mid = new THREE.Vector3().addVectors(sv, tv).multiplyScalar(0.5);
 
-        // Distance from ray to line segment midpoint (rough but fast)
         const toMid = new THREE.Vector3().subVectors(mid, ray.origin);
         const proj = toMid.dot(ray.direction);
-        if (proj < 0) continue; // behind camera
+        if (proj < 0) continue;
 
         const closestOnRay = new THREE.Vector3().copy(ray.direction).multiplyScalar(proj).add(ray.origin);
-        // Now check distance from closestOnRay to the actual line segment
         const dist = pointToSegmentDist(
           closestOnRay.x, closestOnRay.y, closestOnRay.z,
           s.x, s.y, s.z, t.x, t.y, t.z
@@ -1552,37 +1566,36 @@
 
         if (dist < closestDist) {
           closestDist = dist;
-          closestEdge = e;
+          closestEdgeMesh = em;
           closestGroup = group;
-          closestIdx = i;
         }
       }
     }
 
-    checkEdges(sEdges, 'structural');
-    checkEdges(mEdges, 'memlink');
+    checkEdgeGroup(edgeMeshes, 'structural');
+    checkEdgeGroup(memLinkMeshes, 'memlink');
 
-    if (closestEdge) {
-      if (!hoveredEdge || hoveredEdge.drawIdx !== closestIdx || hoveredEdge.group !== closestGroup) {
+    if (closestEdgeMesh) {
+      if (!hoveredEdge || hoveredEdge.edgeMesh !== closestEdgeMesh) {
         clearHighlights();
         hoveredNode = null;
         canvas.style.cursor = 'crosshair';
 
-        highlightEdgeByIndex(closestEdge, closestGroup, closestIdx);
+        highlightEdge(closestEdgeMesh.data, closestEdgeMesh, closestGroup);
 
-        // Edge tooltip
-        const s = graphNodes[closestEdge._si];
-        const t = graphNodes[closestEdge._ti];
-        let html = `<div class="tt-title">${edgeTypeName(closestEdge.type)}</div>`;
-        html += `<div class="tt-type">${esc(s.label)} &harr; ${esc(t.label)}</div>`;
-        if (closestEdge.label) html += `<div class="tt-content">${esc(closestEdge.label)}</div>`;
+        const e = closestEdgeMesh.data;
+        const s = graphNodes[e._si];
+        const t = graphNodes[e._ti];
+        let html = `<div class="tt-title">${edgeTypeName(e.type)}</div>`;
+        html += `<div class="tt-type">${esc(s.label)} \u2194 ${esc(t.label)}</div>`;
+        if (e.label) html += `<div class="tt-content">${esc(e.label)}</div>`;
         tooltip.innerHTML = html;
         tooltip.classList.add('visible');
       }
       return;
     }
 
-    // ── Nothing hovered ──
+    // Nothing hovered
     if (hoveredNode || hoveredEdge) {
       clearHighlights();
       hoveredNode = null;
@@ -1592,6 +1605,17 @@
     }
   }
 
+  function pointToSegmentDist(px, py, pz, ax, ay, az, bx, by, bz) {
+    const dx = bx - ax, dy = by - ay, dz = bz - az;
+    const len2 = dx * dx + dy * dy + dz * dz;
+    if (len2 < 0.0001) return Math.sqrt((px-ax)*(px-ax)+(py-ay)*(py-ay)+(pz-az)*(pz-az));
+    let t = ((px-ax)*dx + (py-ay)*dy + (pz-az)*dz) / len2;
+    t = Math.max(0, Math.min(1, t));
+    const cx = ax + t * dx, cy = ay + t * dy, cz = az + t * dz;
+    return Math.sqrt((px-cx)*(px-cx)+(py-cy)*(py-cy)+(pz-cz)*(pz-cz));
+  }
+
+  // ─── Main Animation Loop ───
   function animate() {
     if (!graphInitialized) return;
     requestAnimationFrame(animate);
@@ -1599,38 +1623,36 @@
     const dt = clock.getDelta();
     const elapsed = clock.getElapsedTime();
 
-    // Force simulation
-    simulateForces();
+    // Layout animation
+    updateLayout(dt);
+
+    // Orbital motion (after layout settles)
+    updateOrbitalMotion(dt);
+
+    // Update positions
     updatePositions();
 
-    // Mode transition countdown
-    if (modeTransition > 0) {
-      modeTransition--;
-    }
-
-    // Pulse effect on hovered node
-    pulsePhase = elapsed;
-    if (hoveredNode && highlightActive) {
-      const pulse = 0.3 + Math.sin(pulsePhase * 4) * 0.15;
-      hoveredNode.glowMat.opacity = pulse;
-      // Subtle scale pulse
-      const s = 1.0 + Math.sin(pulsePhase * 3) * 0.05;
-      hoveredNode.mesh.scale.set(s, s, s);
-    }
+    // Animations (glow pulse, corona rotation, star twinkle)
+    updateAnimations(elapsed);
 
     // Particles
     updateParticles(elapsed);
 
-    // Raycasting (every 2 frames for smoother hover)
+    // Hover pulse effect
+    if (hoveredNode && highlightActive) {
+      const pulse = 0.4 + Math.sin(elapsed * 4) * 0.15;
+      hoveredNode.glowMat.opacity = pulse;
+      const s = 1.0 + Math.sin(elapsed * 3) * 0.04;
+      hoveredNode.mesh.scale.set(s, s, s);
+    }
+
+    // Raycasting (every 2 frames)
     frameCount++;
     if (frameCount % 2 === 0) {
       doRaycast();
     }
 
-    // Controls
     controls.update();
-
-    // Render with bloom
     composer.render();
 
     // FPS counter
