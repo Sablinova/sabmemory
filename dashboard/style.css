@@ -521,6 +521,7 @@ h2 {
   background: rgba(5, 15, 30, 0.7);
   backdrop-filter: blur(8px);
 }
+.modal[hidden] { display: none; }
 
 .modal-content {
   background: var(--bg-surface);

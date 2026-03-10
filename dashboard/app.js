@@ -856,187 +856,182 @@
     animate();
   }
 
+  // Floating CRT TVs array for animation
+  let floatingTVs = [];
+
   function createBackground() {
-    // Procedural galaxy background sphere
-    const bgGeo = new THREE.SphereGeometry(800, 64, 64);
-    const bgMat = new THREE.ShaderMaterial({
+    // Simple dark navy background sphere
+    const bgGeo = new THREE.SphereGeometry(800, 32, 32);
+    const bgMat = new THREE.MeshBasicMaterial({
+      color: 0x0a1628,
       side: THREE.BackSide,
-      uniforms: {
-        uTime: { value: 0.0 },
-      },
+    });
+    const bgMesh = new THREE.Mesh(bgGeo, bgMat);
+    scene.add(bgMesh);
+
+    // === FLOATING CRT TV MONITORS ===
+    const TV_COUNT = 45;
+    const tvStaticShader = {
       vertexShader: `
-        varying vec3 vWorldPos;
         varying vec2 vUv;
         void main() {
           vUv = uv;
-          vec4 worldPos = modelMatrix * vec4(position, 1.0);
-          vWorldPos = worldPos.xyz;
-          gl_Position = projectionMatrix * viewMatrix * worldPos;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
         }
       `,
       fragmentShader: `
         uniform float uTime;
-        varying vec3 vWorldPos;
+        uniform float uSeed;
+
         varying vec2 vUv;
 
-        // Hash functions for noise
         float hash(vec2 p) {
-          return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
-        }
-
-        float hash3(vec3 p) {
-          return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453);
-        }
-
-        // 2D noise
-        float noise(vec2 p) {
-          vec2 i = floor(p);
-          vec2 f = fract(p);
-          f = f * f * (3.0 - 2.0 * f);
-          float a = hash(i);
-          float b = hash(i + vec2(1.0, 0.0));
-          float c = hash(i + vec2(0.0, 1.0));
-          float d = hash(i + vec2(1.0, 1.0));
-          return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
-        }
-
-        // FBM (Fractal Brownian Motion)
-        float fbm(vec2 p) {
-          float v = 0.0;
-          float a = 0.5;
-          mat2 rot = mat2(0.8, 0.6, -0.6, 0.8);
-          for (int i = 0; i < 5; i++) {
-            v += a * noise(p);
-            p = rot * p * 2.0;
-            a *= 0.5;
-          }
-          return v;
+          return fract(sin(dot(p + uSeed, vec2(127.1, 311.7))) * 43758.5453);
         }
 
         void main() {
-          vec3 dir = normalize(vWorldPos);
+          vec2 uv = vUv;
 
-          // Spherical coordinates
-          float theta = atan(dir.z, dir.x);
-          float phi = acos(dir.y);
+          // Base static noise (fast-changing TV snow)
+          float staticGrain = hash(floor(uv * 180.0) + floor(uTime * 12.0));
 
-          // UV from spherical coords
-          vec2 uv = vec2(theta / 6.28318 + 0.5, phi / 3.14159);
+          // Horizontal scanlines
+          float scanline = sin(uv.y * 400.0) * 0.5 + 0.5;
+          scanline = pow(scanline, 6.0) * 0.15;
 
-          // Base color: medium navy gradient
-          vec3 bgCol1 = vec3(0.059, 0.133, 0.251); // #0f2240
-          vec3 bgCol2 = vec3(0.086, 0.157, 0.314); // #162850
-          vec3 col = mix(bgCol2, bgCol1, dir.y * 0.5 + 0.5);
+          // Rolling bar (CRT refresh artifact)
+          float roll = fract(uv.y - uTime * 0.08 - uSeed * 0.5);
+          float rollBar = smoothstep(0.0, 0.03, roll) * smoothstep(0.08, 0.05, roll);
 
-          // Spiral arm structure
-          float spiralAngle = theta + dir.y * 1.5;
-          float spiral = sin(spiralAngle * 2.0 + uTime * 0.02) * 0.5 + 0.5;
-          spiral *= sin(spiralAngle * 3.0 - uTime * 0.015) * 0.5 + 0.5;
-          spiral = pow(spiral, 2.0) * 0.3;
+          // Occasional horizontal glitch tear
+          float glitchTime = floor(uTime * 1.5 + uSeed * 10.0);
+          float glitchY = hash(vec2(glitchTime, uSeed + 77.0));
+          float glitchBand = 1.0 - smoothstep(0.0, 0.008, abs(uv.y - glitchY));
+          float glitchOn = step(0.6, hash(vec2(glitchTime, uSeed + 33.0)));
+          float glitchShift = (hash(vec2(uv.y * 50.0, glitchTime)) - 0.5) * 0.1 * glitchBand * glitchOn;
+          float glitchedStatic = hash(floor((uv + vec2(glitchShift, 0.0)) * 180.0) + floor(uTime * 12.0));
 
-          // Nebula clouds using FBM
-          vec2 nebUV = uv * 4.0 + uTime * 0.005;
-          float neb1 = fbm(nebUV);
-          float neb2 = fbm(nebUV * 1.5 + 3.7);
-          float neb3 = fbm(nebUV * 0.8 + 7.3);
+          // Mix normal static with glitched
+          float finalStatic = mix(staticGrain, glitchedStatic, glitchBand * glitchOn);
 
-          // Purple nebula patches
-          vec3 nebPurple = vec3(0.25, 0.1, 0.4) * pow(neb1, 2.5) * 0.5;
+          // Color: mostly grey static with cyan tint
+          vec3 col = vec3(finalStatic * 0.6);
+          col.g += finalStatic * 0.08;
+          col.b += finalStatic * 0.15;
 
-          // Blue nebula patches
-          vec3 nebBlue = vec3(0.05, 0.15, 0.35) * pow(neb2, 2.0) * 0.6;
+          // Subtract scanlines
+          col -= vec3(scanline);
 
-          // Pink/magenta wisps
-          vec3 nebPink = vec3(0.3, 0.05, 0.2) * pow(neb3, 3.0) * 0.3;
+          // Rolling bar brightens slightly
+          col += vec3(0.02, 0.05, 0.08) * rollBar;
 
-          // Combine nebula with spiral structure
-          col += (nebPurple + nebBlue + nebPink) * (0.5 + spiral);
+          // Edge darkening (CRT curvature vignette)
+          vec2 vig = uv * 2.0 - 1.0;
+          float vigFade = 1.0 - pow(length(vig) * 0.7, 2.5);
+          col *= max(vigFade, 0.0);
 
-          // Star density modulated by spiral arms
-          float starDensity = 0.3 + spiral * 0.5;
+          // Slight edge color bleed (chromatic aberration at edges)
+          float edgeDist = length(vig);
+          col.r += smoothstep(0.6, 1.0, edgeDist) * 0.04;
+          col.b += smoothstep(0.5, 0.9, edgeDist) * 0.06;
 
-          // Layer 1: tiny dim stars (many)
-          vec2 starUV1 = uv * 200.0;
-          float star1 = hash(floor(starUV1));
-          star1 = step(1.0 - starDensity * 0.015, star1);
-          col += vec3(0.6, 0.7, 0.9) * star1 * 0.3;
-
-          // Layer 2: medium stars
-          vec2 starUV2 = uv * 80.0;
-          float star2 = hash(floor(starUV2) + 47.0);
-          star2 = step(1.0 - starDensity * 0.008, star2);
-          float starBright2 = hash(floor(starUV2) + 91.0);
-          col += vec3(0.7, 0.8, 1.0) * star2 * (0.4 + starBright2 * 0.3);
-
-          // Layer 3: bright accent stars (rare, twinkling)
-          vec2 starUV3 = uv * 30.0;
-          float star3 = hash(floor(starUV3) + 137.0);
-          star3 = step(0.992, star3);
-          float twinkle = sin(uTime * 2.0 + hash(floor(starUV3)) * 6.28) * 0.5 + 0.5;
-          vec3 starCol3 = mix(vec3(0.5, 0.7, 1.0), vec3(0.8, 0.6, 1.0), hash(floor(starUV3) + 200.0));
-          col += starCol3 * star3 * (0.5 + twinkle * 0.5);
-
-          // Subtle galactic core glow at center
-          float coreDist = length(dir.xz);
-          float coreGlow = exp(-coreDist * coreDist * 3.0) * 0.15;
-          col += vec3(0.15, 0.2, 0.4) * coreGlow;
-
-          gl_FragColor = vec4(col, 1.0);
+          gl_FragColor = vec4(col, 0.92);
         }
       `,
-    });
-    const bgMesh = new THREE.Mesh(bgGeo, bgMat);
-    bgMesh.userData.isBgSphere = true;
-    scene.add(bgMesh);
+    };
 
-    // Additional foreground star layers (Three.js Points)
-    // Layer 1: tiny white stars close to graph
-    const starCount1 = 500;
-    const starPos1 = new Float32Array(starCount1 * 3);
-    for (let i = 0; i < starCount1; i++) {
+    for (let i = 0; i < TV_COUNT; i++) {
+      // Random position in a shell around the graph
       const theta = Math.random() * Math.PI * 2;
       const phi = Math.acos(2 * Math.random() - 1);
-      const r = 200 + Math.random() * 300;
-      starPos1[i * 3] = r * Math.sin(phi) * Math.cos(theta);
-      starPos1[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
-      starPos1[i * 3 + 2] = r * Math.cos(phi);
-    }
-    const starGeo1 = new THREE.BufferGeometry();
-    starGeo1.setAttribute('position', new THREE.BufferAttribute(starPos1, 3));
-    const starMat1 = new THREE.PointsMaterial({
-      color: 0xaaccff,
-      size: 0.3,
-      transparent: true,
-      opacity: 0.3,
-      sizeAttenuation: true,
-      depthWrite: false,
-    });
-    const stars1 = new THREE.Points(starGeo1, starMat1);
-    scene.add(stars1);
+      const r = 120 + Math.random() * 380;
+      const x = r * Math.sin(phi) * Math.cos(theta);
+      const y = r * Math.sin(phi) * Math.sin(theta);
+      const z = r * Math.cos(phi);
 
-    // Layer 2: larger cyan-tinted accent stars
-    const starCount2 = 80;
-    const starPos2 = new Float32Array(starCount2 * 3);
-    for (let i = 0; i < starCount2; i++) {
+      // Random size (varied TV sizes)
+      const scale = 3 + Math.random() * 12;
+      const aspect = 1.2 + Math.random() * 0.6; // width/height ratio
+
+      // TV group
+      const tvGroup = new THREE.Group();
+      tvGroup.position.set(x, y, z);
+
+      // Random rotation (face roughly toward center with some randomness)
+      tvGroup.lookAt(0, 0, 0);
+      tvGroup.rotateY((Math.random() - 0.5) * 1.2);
+      tvGroup.rotateX((Math.random() - 0.5) * 0.8);
+
+      // TV frame (dark box)
+      const frameDepth = scale * 0.15;
+      const frameGeo = new THREE.BoxGeometry(scale * aspect * 1.12, scale * 1.12, frameDepth);
+      const frameMat = new THREE.MeshStandardMaterial({
+        color: 0x111820,
+        roughness: 0.8,
+        metalness: 0.3,
+      });
+      const frame = new THREE.Mesh(frameGeo, frameMat);
+      tvGroup.add(frame);
+
+      // Screen (front face plane with static shader)
+      const seed = Math.random() * 100;
+      const screenMat = new THREE.ShaderMaterial({
+        uniforms: {
+          uTime: { value: 0.0 },
+          uSeed: { value: seed },
+        },
+        vertexShader: tvStaticShader.vertexShader,
+        fragmentShader: tvStaticShader.fragmentShader,
+        transparent: true,
+      });
+      const screenGeo = new THREE.PlaneGeometry(scale * aspect, scale);
+      const screen = new THREE.Mesh(screenGeo, screenMat);
+      screen.position.z = frameDepth * 0.51; // slightly in front of frame
+      tvGroup.add(screen);
+
+      // Cyan glow light from screen (subtle)
+      const tvLight = new THREE.PointLight(0x00d4ff, 0.15 + Math.random() * 0.2, scale * 6);
+      tvLight.position.z = frameDepth * 0.6;
+      tvGroup.add(tvLight);
+
+      scene.add(tvGroup);
+
+      // Store for animation
+      floatingTVs.push({
+        group: tvGroup,
+        screen: screen,
+        light: tvLight,
+        seed: seed,
+        rotSpeed: (Math.random() - 0.5) * 0.002,
+        bobSpeed: 0.3 + Math.random() * 0.5,
+        bobAmp: 0.3 + Math.random() * 0.6,
+        baseY: y,
+      });
+    }
+
+    // Sparse ambient particles (dust motes) instead of star fields
+    const dustCount = 200;
+    const dustPos = new Float32Array(dustCount * 3);
+    for (let i = 0; i < dustCount; i++) {
       const theta = Math.random() * Math.PI * 2;
       const phi = Math.acos(2 * Math.random() - 1);
-      const r = 180 + Math.random() * 350;
-      starPos2[i * 3] = r * Math.sin(phi) * Math.cos(theta);
-      starPos2[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
-      starPos2[i * 3 + 2] = r * Math.cos(phi);
+      const r = 100 + Math.random() * 400;
+      dustPos[i * 3] = r * Math.sin(phi) * Math.cos(theta);
+      dustPos[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
+      dustPos[i * 3 + 2] = r * Math.cos(phi);
     }
-    const starGeo2 = new THREE.BufferGeometry();
-    starGeo2.setAttribute('position', new THREE.BufferAttribute(starPos2, 3));
-    const starMat2 = new THREE.PointsMaterial({
+    const dustGeo = new THREE.BufferGeometry();
+    dustGeo.setAttribute('position', new THREE.BufferAttribute(dustPos, 3));
+    const dustMat = new THREE.PointsMaterial({
       color: 0x00d4ff,
-      size: 0.6,
+      size: 0.4,
       transparent: true,
-      opacity: 0.4,
+      opacity: 0.2,
       sizeAttenuation: true,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
     });
-    starField = new THREE.Points(starGeo2, starMat2);
+    starField = new THREE.Points(dustGeo, dustMat);
     scene.add(starField);
   }
 
@@ -1727,12 +1722,18 @@
     const dt = clock.getDelta();
     const elapsed = clock.getElapsedTime();
 
-    // Update galaxy shader time
-    scene.traverse(function(obj) {
-      if (obj.userData && obj.userData.isBgSphere && obj.material && obj.material.uniforms) {
-        obj.material.uniforms.uTime.value = elapsed;
-      }
-    });
+    // Update floating CRT TV screens
+    for (let i = 0; i < floatingTVs.length; i++) {
+      const tv = floatingTVs[i];
+      // Update static shader time
+      tv.screen.material.uniforms.uTime.value = elapsed;
+      // Gentle rotation
+      tv.group.rotation.y += tv.rotSpeed;
+      // Gentle bobbing
+      tv.group.position.y = tv.baseY + Math.sin(elapsed * tv.bobSpeed + tv.seed) * tv.bobAmp;
+      // Subtle light flicker
+      tv.light.intensity = (0.15 + Math.sin(elapsed * 3.0 + tv.seed * 10.0) * 0.05) * (0.9 + Math.random() * 0.2);
+    }
 
     // Layout animation
     updateLayout(dt);
